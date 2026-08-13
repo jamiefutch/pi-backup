@@ -67,7 +67,7 @@ async function promptForExternalBackupDir(ctx: any): Promise<string | null> {
 	const settings = readSettings();
 	settings.externalBackupDir = chosenPath;
 	writeSettings(settings);
-	ctx.ui.notify(`Saved external backup directory to settings.json:\n${chosenPath}`, "success");
+	ctx.ui.notify(`Saved external backup directory to settings.json:\n${chosenPath}`, "info");
 
 	// Ensure directory exists
 	mkdirSync(chosenPath, { recursive: true });
@@ -336,7 +336,7 @@ async function createBackup(ctx: any, internal: boolean) {
 	ctx.ui.notify(`Creating ${internal ? "internal" : "external"} backup...`, "info");
 	const result = runBackup(internal, ctx);
 	if (result.success) {
-		ctx.ui.notify(`Backup created successfully${result.backupPath ? `\n${result.backupPath}` : ""}`, "success");
+		ctx.ui.notify(`Backup created successfully${result.backupPath ? `\n${result.backupPath}` : ""}`, "info");
 	} else {
 		ctx.ui.notify(`Backup failed:\n${result.output}`, "error");
 	}
@@ -388,7 +388,7 @@ async function showBackupActions(ctx: any, backup: BackupInfo) {
 	if (choice.startsWith("🔄")) await confirmRestore(ctx, backup);
 	else if (choice.startsWith("📋")) {
 		const result = copyBackupToInternal(backup);
-		ctx.ui.notify(result.success ? result.output : `Failed: ${result.output}`, result.success ? "success" : "error");
+		ctx.ui.notify(result.success ? result.output : `Failed: ${result.output}`, result.success ? "info" : "error");
 	} else if (choice.startsWith("📄")) await viewManifest(ctx, backup);
 	else if (choice.startsWith("🗑️")) await confirmDelete(ctx, backup);
 }
@@ -407,7 +407,7 @@ async function confirmRestore(ctx: any, backup: BackupInfo) {
 	ctx.ui.notify("Restoring... (this may take a moment)", "info");
 	const result = runRestore(backup.path);
 	if (result.success) {
-		ctx.ui.notify("Restore complete!\n\nNext steps:\n1. cd ~/.pi/agent && npm install\n2. pi --version\n3. /ctx-doctor", "success");
+		ctx.ui.notify("Restore complete!\n\nNext steps:\n1. cd ~/.pi/agent && npm install\n2. pi --version\n3. /ctx-doctor", "info");
 	} else {
 		ctx.ui.notify(`Restore failed:\n${result.output}`, "error");
 	}
@@ -421,7 +421,7 @@ async function confirmDelete(ctx: any, backup: BackupInfo) {
 	if (!confirmed) return;
 
 	const result = deleteBackup(backup);
-	ctx.ui.notify(result.success ? result.output : `Failed: ${result.output}`, result.success ? "success" : "error");
+	ctx.ui.notify(result.success ? result.output : `Failed: ${result.output}`, result.success ? "info" : "error");
 }
 
 async function viewManifest(ctx: any, backup: BackupInfo) {
