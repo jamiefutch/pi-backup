@@ -1,0 +1,42 @@
+# ── Pi project-local config ────────────────────────────────
+# Project-local Pi settings, sessions, extensions, and state.
+# Never commit these — they are machine/user specific.
+.pi/
+
+# ── VS Code workspace ─────────────────────────────────────
+# Local workspace file with user-specific layout/settings.
+*.code-workspace
+
+# ── Backup data (large) ───────────────────────────────────
+# The actual backup archives are stored separately
+# (default: ~/projects/personal/pi-utils/backups), but ignore
+# any local copies so they are never committed.
+backups/
+*.7z
+*.zip
+
+# ── Node / dependencies ───────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/
+
+# ── macOS ─────────────────────────────────────────────────
+.DS_Store
+
+# ── Editor / IDE ──────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Build / test output ───────────────────────────────────
+dist/
+build/
+coverage/
+*.tsbuildinfo
