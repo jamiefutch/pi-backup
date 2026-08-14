@@ -32,7 +32,7 @@
   ],
   "pi": {
     "extensions": [
-      "./dist/extensions"
+      "./dist/extensions/pi-backup-manager.js"
     ]
   },
   "peerDependencies": {
