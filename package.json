@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc"
   },
-  "keywords": ["pi", "pi-package", "backup", "restore", "cli", "disaster-recovery"],
+  "keywords": ["pi", "pi-package"],
   "license": "MIT",
   "repository": {
     "type": "git",
