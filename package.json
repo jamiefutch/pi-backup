@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit"
+    "build": "tsc"
   },
   "keywords": ["pi", "pi-package", "backup", "restore", "cli", "disaster-recovery"],
   "license": "MIT",
@@ -21,14 +21,14 @@
     "node": ">=22"
   },
   "files": [
-    "extensions",
+    "dist",
     "*.sh",
     "*.ps1",
     "LICENSE",
     "README.md"
   ],
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": ["./dist/extensions"]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
