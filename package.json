@@ -9,7 +9,10 @@
   },
   "keywords": [
     "pi",
-    "pi-package"
+    "pi-package",
+    "pi-extension",
+    "backup",
+    "restore"
   ],
   "license": "MIT",
   "repository": {
@@ -43,5 +46,8 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "publishConfig": {
+    "access": "public"
+  }
 }
