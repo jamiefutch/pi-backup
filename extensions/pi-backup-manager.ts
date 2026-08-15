@@ -4,7 +4,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, rmSync, cpSync } from "node:fs";
 
-const HOME_DIR = process.env.HOME || process.env.USERPROFILE || "";\nconst IS_WINDOWS = process.platform === "win32";\nconst PI_ROOT = join(HOME_DIR, ".pi");
+const HOME_DIR = process.env.HOME || process.env.USERPROFILE || "";
+const IS_WINDOWS = process.platform === "win32";
+const PI_ROOT = join(HOME_DIR, ".pi");
 const INTERNAL_BACKUP_DIR = join(PI_ROOT, "backups");
 const SETTINGS_FILE = join(PI_ROOT, "agent", "settings.json");
 const DEFAULT_EXTERNAL_DIR = join(HOME_DIR, "projects", "personal", "pi-utils", "backups");
@@ -206,7 +208,9 @@ function runBackup(internal: boolean, ctx?: any): { success: boolean; output: st
 			env.BACKUP_ROOT = externalDir;
 			env.KEEP_UNCOMPRESSED = "0"; // external: compressed archive only
 		}
-const command = IS_WINDOWS ? "pwsh" : getBackupScriptPath();\n\t\tconst args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getBackupScriptPath()] : [];\n\t\tconst output = execFileSync(command, args, { env, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+const command = IS_WINDOWS ? "pwsh" : getBackupScriptPath();
+		const args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getBackupScriptPath()] : [];
+		const output = execFileSync(command, args, { env, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
 		const match = output.match(/Staging:\s+(.+)$/m) || output.match(/Archive:\s+(.+)$/m);
 		const backupPath = match ? match[1].trim() : undefined;
 		return { success: true, output, backupPath };
@@ -217,7 +221,9 @@ const command = IS_WINDOWS ? "pwsh" : getBackupScriptPath();\n\t\tconst args = I
 
 function runRestore(backupPath: string): { success: boolean; output: string } {
 	try {
-const command = IS_WINDOWS ? "pwsh" : getRestoreScriptPath();\n\t\tconst args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getRestoreScriptPath(), backupPath] : [backupPath];\n\t\tconst output = execFileSync(command, args, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+const command = IS_WINDOWS ? "pwsh" : getRestoreScriptPath();
+		const args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getRestoreScriptPath(), backupPath] : [backupPath];
+		const output = execFileSync(command, args, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
 		return { success: true, output };
 	} catch (e: any) {
 		return { success: false, output: e.stdout || e.stderr || e.message };
