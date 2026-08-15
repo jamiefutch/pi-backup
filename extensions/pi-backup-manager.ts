@@ -1,13 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execSync } from "node:child_process";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, rmSync, cpSync } from "node:fs";
 
 const PI_ROOT = join(process.env.HOME || "", ".pi");
 const INTERNAL_BACKUP_DIR = join(PI_ROOT, "backups");
 const SETTINGS_FILE = join(PI_ROOT, "agent", "settings.json");
 const DEFAULT_EXTERNAL_DIR = join(process.env.HOME || "", "projects", "personal", "pi-utils", "backups");
-const PI_UTILS_ROOT = join(process.env.HOME || "", "projects", "personal", "pi-backup");
+const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 interface BackupInfo {
 	name: string;
@@ -80,11 +81,11 @@ function resolveExternalBackupDir(ctx?: any): string {
 }
 
 function getBackupScriptPath(): string {
-	return join(PI_UTILS_ROOT, "backup-pi.sh");
+	return join(PACKAGE_ROOT, "backup-pi.sh");
 }
 
 function getRestoreScriptPath(): string {
-	return join(PI_UTILS_ROOT, "restore-pi.sh");
+	return join(PACKAGE_ROOT, "restore-pi.sh");
 }
 
 function ensureDirs(externalDir: string) {
