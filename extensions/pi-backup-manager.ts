@@ -1,13 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, rmSync, cpSync } from "node:fs";
 
-const PI_ROOT = join(process.env.HOME || "", ".pi");
+const HOME_DIR = process.env.HOME || process.env.USERPROFILE || "";\nconst IS_WINDOWS = process.platform === "win32";\nconst PI_ROOT = join(HOME_DIR, ".pi");
 const INTERNAL_BACKUP_DIR = join(PI_ROOT, "backups");
 const SETTINGS_FILE = join(PI_ROOT, "agent", "settings.json");
-const DEFAULT_EXTERNAL_DIR = join(process.env.HOME || "", "projects", "personal", "pi-utils", "backups");
+const DEFAULT_EXTERNAL_DIR = join(HOME_DIR, "projects", "personal", "pi-utils", "backups");
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 interface BackupInfo {
@@ -81,11 +81,11 @@ function resolveExternalBackupDir(ctx?: any): string {
 }
 
 function getBackupScriptPath(): string {
-	return join(PACKAGE_ROOT, "backup-pi.sh");
+return join(PACKAGE_ROOT, IS_WINDOWS ? "backup-pi.ps1" : "backup-pi.sh");
 }
 
 function getRestoreScriptPath(): string {
-	return join(PACKAGE_ROOT, "restore-pi.sh");
+return join(PACKAGE_ROOT, IS_WINDOWS ? "restore-pi.ps1" : "restore-pi.sh");
 }
 
 function ensureDirs(externalDir: string) {
@@ -206,7 +206,7 @@ function runBackup(internal: boolean, ctx?: any): { success: boolean; output: st
 			env.BACKUP_ROOT = externalDir;
 			env.KEEP_UNCOMPRESSED = "0"; // external: compressed archive only
 		}
-		const output = execSync(getBackupScriptPath(), { env, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+const command = IS_WINDOWS ? "pwsh" : getBackupScriptPath();\n\t\tconst args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getBackupScriptPath()] : [];\n\t\tconst output = execFileSync(command, args, { env, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
 		const match = output.match(/Staging:\s+(.+)$/m) || output.match(/Archive:\s+(.+)$/m);
 		const backupPath = match ? match[1].trim() : undefined;
 		return { success: true, output, backupPath };
@@ -217,7 +217,7 @@ function runBackup(internal: boolean, ctx?: any): { success: boolean; output: st
 
 function runRestore(backupPath: string): { success: boolean; output: string } {
 	try {
-		const output = execSync(`${getRestoreScriptPath()} "${backupPath}"`, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+const command = IS_WINDOWS ? "pwsh" : getRestoreScriptPath();\n\t\tconst args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getRestoreScriptPath(), backupPath] : [backupPath];\n\t\tconst output = execFileSync(command, args, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
 		return { success: true, output };
 	} catch (e: any) {
 		return { success: false, output: e.stdout || e.stderr || e.message };
