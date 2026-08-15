@@ -11,7 +11,7 @@ Complete backup/restore for Pi coding agent. Backs up **everything** needed to r
 pi install npm:@jamiefutch/pi-backup@latest
 
 # From git
-pi install git:github.com/jamiefutch/pi-backup@main
+pi install git:github.com/jamiefutch/pi-backup@master
 
 # From local path
 pi install /path/to/pi-backup
