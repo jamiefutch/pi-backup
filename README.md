@@ -1,6 +1,6 @@
 # pi-backup — Pi Backup & Restore Utilities
 
-Complete backup/restore for Pi coding agent. Backs up **everything** needed to restore to identical state after a clean reinstall.
+Complete, cross-platform backup/restore for the Pi coding agent. Backs up **everything** needed to restore to an equivalent state after a clean reinstall, with an interactive `/pi-backup` manager and 7-Zip-first archive support.
 
 ## Installation
 
@@ -27,6 +27,13 @@ pi install /path/to/pi-backup
 
 Then restart Pi or run `/reload`.
 
+### Developer documentation
+
+Repository-specific agent guidance is available in:
+
+- `.pi/agents.md` — pi-backup project conventions and safety rules
+- `.pi/agents/pi-development-expert.md` — detailed Pi extension, package, SDK, TUI, provider, and resource-development guidance
+
 ---
 
 ## Scripts
@@ -43,6 +50,18 @@ Then restart Pi or run `/reload`.
 | **Windows (PowerShell)** | `backup-pi.ps1`, `restore-pi.ps1`, `pi-clean-reinstall.ps1` (requires PowerShell 7 / `pwsh`) |
 
 ---
+
+## Archive format and compression
+
+External backups are compressed automatically:
+
+- If `7zz`, `7z`, or `7za` is available on **macOS, Linux, or Windows**, Pi Backup uses 7-Zip and creates a `.7z` archive.
+- Otherwise it falls back to native platform tools and creates a `.zip` archive (`zip`/`unzip` on macOS/Linux, `Compress-Archive`/`Expand-Archive` on Windows).
+- Restoring a `.7z` archive requires 7-Zip to be installed and available on `PATH`.
+- The TUI uses the same preference for creating, restoring, copying, and viewing manifests.
+- Internal backups remain uncompressed directories for fast rollback.
+
+The executable may be named `7zz`, `7z`, or `7za`.
 
 ## Usage
 
@@ -83,7 +102,7 @@ External dir: ~/projects/personal/pi-utils/backups
 Backups (8 total)
 
  → 📁 pi-backup-20260812-112053  │  2026-08-12 11:20:53  │  1.6 MB  │  347 files
-   💾 pi-backup-20260812-112019.zip  │  2026-08-12 11:20:19  │  1.6 MB  │  1 files • compressed
+   💾 pi-backup-20260812-112019.7z  │  2026-08-12 11:20:19  │  1.6 MB  │  1 files • compressed
    💾 pi-backup-20260812-095402.zip  │  2026-08-12 09:54:02  │  1.6 MB  │  1 files • compressed
    ...
    🔄 Refresh
@@ -95,7 +114,7 @@ Columns: **Location icon** • **Name** • **Timestamp** • **Size** • **Fil
 #### Backup Actions (after selecting a backup)
 
 ```
-Backup: pi-backup-20260812-112019.zip
+Backup: pi-backup-20260812-112019.7z
 
  → 🔄 Restore this backup  (2026-08-12 11:20:19)
    📋 Copy to internal  (~/.pi/backups/)
@@ -106,7 +125,7 @@ Backup: pi-backup-20260812-112019.zip
 
 | Action | Description |
 |--------|-------------|
-| **🔄 Restore** | Runs `restore-pi.sh` — overwrites all Pi config (requires confirmation) |
+| **🔄 Restore** | Runs the platform restore script — overwrites all Pi config (requires confirmation) |
 | **📋 Copy to internal** | Copies external backup to `~/.pi/backups/` for quick access (external only) |
 | **📄 View manifest** | Opens `MANIFEST.txt` in editor (extracts from compressed archives) |
 | **🗑️ Delete** | Permanently removes backup (requires confirmation) |
@@ -132,9 +151,9 @@ Backup: pi-backup-20260812-112019.zip
 ~/projects/personal/pi-backup/pi-clean-reinstall.sh
 ```
 
-#### 3. Restore
+#### 3. Restore a directory, `.7z` archive, or `.zip` archive
 ```bash
-~/projects/personal/pi-backup/restore-pi.sh ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
+~/projects/personal/pi-backup/restore-pi.sh ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000.7z
 ```
 
 #### 4. Reinstall npm deps + verify
@@ -172,13 +191,13 @@ Customize locations in PowerShell with environment variables (same names as the 
 $env:PI_ROOT='C:\Users\you\.pi'; $env:BACKUP_ROOT='D:\pi-backups'; .\backup-pi.ps1
 ```
 
-> **Note**: If the Execution Policy blocks scripts, run once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. Backups are created as `.zip` via the built-in `Compress-Archive` (no external tools needed).
+> **Note**: If the Execution Policy blocks scripts, run once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. With 7-Zip (`7zz`, `7z`, or `7za`) on `PATH`, backups are created as `.7z`; otherwise PowerShell's built-in `Compress-Archive` creates `.zip` files. `restore-pi.ps1` prefers 7-Zip when available and uses `Expand-Archive` for ZIP fallback.
 
 ## What Gets Backed Up
 
 | Category | Paths |
 |----------|-------|
-| **Core config** | `settings.json`, `auth.json`, `models.json`, `trust.json`, `keybindings.json`, `pix.json`, `optimizer.json`, `hermes-memory-config.json` |
+| **Core config** | `settings.json`, `auth.json`, `models.json`, `trust.json`, `keybindings.json`, `pix.json`, `optimizer.json`, `lmstudio.json.bak`, `hermes-memory-config.json`, `pi.code-workspace` |
 | **Extension configs** | `pi-hermes-memory-cleanup/scoped-memory.json`, `loop-police.json`, `pi-rtk/config.json`, `context-mode/config.json`, `pi-timeout/config.json`, `pi-context-viewer/config.json`, `pix-optimizer/config.json`, `pi-nvidia-nim/config.json` |
 | **Global skills** | `~/.pi/agent/skills/` |
 | **Project skills & memory** | `~/.pi/agent/projects-memory/<project>/` |
@@ -274,6 +293,8 @@ If the default directory already contains backups, it is treated as configured a
 |----------|---------|---------|
 | `PI_ROOT` | `~/.pi` | Override Pi root directory |
 | `BACKUP_ROOT` | `~/projects/personal/pi-utils/backups` | Override backup destination (highest priority for the TUI too) |
+| `KEEP_UNCOMPRESSED` | `0` | Keep the uncompressed staging directory after external backup; the TUI sets this automatically for internal backups |
+| `PKG_MANAGER` | `bun` | Package manager used by the clean-reinstall scripts (`bun`, `npm`, etc.) |
 
 ```bash
 # Custom locations
