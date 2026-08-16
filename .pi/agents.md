@@ -56,3 +56,4 @@ Run typecheck and both shell-language syntax checks after changes. Use temporary
 - Run validation before committing.
 - Use focused commits and push the feature branch for review.
 - If a pull request cannot be created automatically, provide the branch and compare URL.
+- Update the project documentation after every code update.  README.md etc.
