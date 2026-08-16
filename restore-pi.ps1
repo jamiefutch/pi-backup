@@ -33,7 +33,7 @@ Examples:
   .\$($MyInvocation.MyCommand.Name) ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000
   .\$($MyInvocation.MyCommand.Name) ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000.zip
 
-Accepts either an uncompressed backup directory or a compressed zip archive
+Accepts either an uncompressed backup directory or a compressed zip/7z archive
 (as produced by backup-pi.ps1).
 
 Prerequisites:
@@ -48,17 +48,32 @@ if (-not $BackupArg) { Show-Usage }
 # ─── Archive handling ─────────────────────────────────────
 $STAGE = $null
 $BackupDir = $null
+$SevenZip = @('7zz', '7z', '7za') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
 
 if (Test-Path -LiteralPath $BackupArg -PathType Container) {
     # Uncompressed directory backup
     $BackupDir = $BackupArg
-} elseif (Test-Path -LiteralPath $BackupArg) {
-    # Compressed zip archive: extract to a temp dir first
+} elseif (Test-Path -LiteralPath $BackupArg -PathType Leaf) {
+    # Compressed archive: prefer 7zip when installed, otherwise use native ZIP support.
+    $extension = [System.IO.Path]::GetExtension($BackupArg).ToLowerInvariant()
+    if ($extension -notin @('.zip', '.7z')) {
+        Err "Unsupported backup archive: $BackupArg (need .zip or .7z)"
+        exit 1
+    }
+    if ($extension -eq '.7z' -and -not $SevenZip) {
+        Err "7zip is required to extract .7z backups. Install 7-Zip and ensure it is on PATH."
+        exit 1
+    }
     $STAGE = Join-Path $env:TEMP ("pi-restore-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $STAGE -Force | Out-Null
     Log "Extracting archive: $BackupArg"
     try {
-        Expand-Archive -LiteralPath $BackupArg -DestinationPath $STAGE -Force
+        if ($SevenZip) {
+            & $SevenZip.Source x -y "-o$STAGE" $BackupArg | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7zip exited with code $LASTEXITCODE" }
+        } else {
+            Expand-Archive -LiteralPath $BackupArg -DestinationPath $STAGE -Force
+        }
     } catch {
         Err "Failed to extract archive: $($_.Exception.Message)"
         Remove-Item -LiteralPath $STAGE -Recurse -Force -ErrorAction SilentlyContinue
@@ -70,7 +85,7 @@ if (Test-Path -LiteralPath $BackupArg -PathType Container) {
     $BackupDir = $top.FullName
     Log "Extracted to: $BackupDir"
 } else {
-    Err "Backup not found: $BackupArg (need a directory or .zip)"
+    Err "Backup not found: $BackupArg (need a directory, .zip, or .7z)"
     exit 1
 }
 

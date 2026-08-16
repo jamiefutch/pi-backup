@@ -20,6 +20,8 @@ $Timestamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
 $ArchiveBase = "pi-backup-$Timestamp"
 $ArchiveDir  = Join-Path $BackupRoot $ArchiveBase
 $KeepUncompressed = $env:KEEP_UNCOMPRESSED -eq '1'
+$SevenZip = @('7zz', '7z', '7za') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+$ArchiveExtension = if ($SevenZip) { '7z' } else { 'zip' }
 
 function Log  { Write-Host "[INFO]  $args"     -ForegroundColor Cyan }
 function OK   { Write-Host "[OK]    $args"     -ForegroundColor Green }
@@ -58,13 +60,13 @@ function Copy-Tree([string]$src, [string]$dst, [string[]]$excludeDirs = @(), [st
         & robocopy @robocopyArgs | Out-Null
     } else {
         # Fallback: manual recursive copy with exclusions
-        $dirs = if ($excludeDirs.Count) { @{ } } else { @{ } }
         Get-ChildItem -LiteralPath $src | ForEach-Object {
+            $item = $_
             $skip = $false
-            if ($_.PSIsContainer -and $_.Name -in $excludeDirs) { $skip = $true }
-            if (-not $_.PSIsContainer -and $_.Name -like $excludeFiles) { $skip = $true }
+            if ($item.PSIsContainer -and $item.Name -in $excludeDirs) { $skip = $true }
+            if (-not $item.PSIsContainer -and ($excludeFiles | Where-Object { $item.Name -like $_ })) { $skip = $true }
             if (-not $skip) {
-                Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dst $_.Name) -Recurse -Force
+                Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $dst $item.Name) -Recurse -Force
             }
         }
     }
@@ -200,15 +202,25 @@ $manifest += ($relFiles -join "`n") + "`n"
 Set-Content -LiteralPath (Join-Path $ArchiveDir 'MANIFEST.txt') -Value $manifest -Encoding UTF8
 
 # ── 9. Compress ───────────────────────────────────────────
-Log "9/9  Compressing backup..."
-$archivePath = Join-Path $BackupRoot ($ArchiveBase + '.zip')
-try {
-    Compress-Archive -LiteralPath $ArchiveDir -DestinationPath $archivePath -CompressionLevel Optimal -Force
-    OK "  $archivePath"
-} catch {
-    Warn "  Compress-Archive failed: $_.Exception.Message"
-    Warn "  Keeping uncompressed staging dir: $ArchiveDir"
-    $archivePath = $null
+$archivePath = $null
+if ($KeepUncompressed) {
+    Log "9/9  Skipping compression for internal backup"
+} else {
+    Log "9/9  Compressing backup ($ArchiveExtension)..."
+    $archivePath = Join-Path $BackupRoot ($ArchiveBase + ".$ArchiveExtension")
+    try {
+        if ($SevenZip) {
+            & $SevenZip.Source a -t7z -mx=9 $archivePath $ArchiveDir | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7zip exited with code $LASTEXITCODE" }
+        } else {
+            Compress-Archive -LiteralPath $ArchiveDir -DestinationPath $archivePath -CompressionLevel Optimal -Force
+        }
+        OK "  $archivePath"
+    } catch {
+        Warn "  Compress-Archive failed: $_.Exception.Message"
+        Warn "  Keeping uncompressed staging dir: $ArchiveDir"
+        $archivePath = $null
+    }
 }
 
 # ── 10. Clean up staging dir (unless told to keep it) ─────
