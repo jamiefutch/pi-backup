@@ -29,7 +29,7 @@ elif command -v zip >/dev/null 2>&1; then
   ZIP_TOOL="zip"
   ZIP_EXT="zip"
 fi
-[[ -n "$ZIP_TOOL" ]] || { echo -e "${RED}[ERR]${NC} Neither 7zip nor zip found. Install one for compressed backups."; exit 1; }
+[[ -n "$ZIP_TOOL" ]] || { echo "[ERR] Neither 7zip nor zip found. Install one for compressed backups." >&2; exit 1; }
 ARCHIVE="$BACKUP_ROOT/pi-backup-$TIMESTAMP.$ZIP_EXT"
 
 # ─── Colors ──────────────────────────────────────────────────────

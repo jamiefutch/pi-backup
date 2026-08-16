@@ -90,6 +90,17 @@ function getRestoreScriptPath(): string {
 return join(PACKAGE_ROOT, IS_WINDOWS ? "restore-pi.ps1" : "restore-pi.sh");
 }
 
+function findSevenZip(): string | null {
+	const lookup = IS_WINDOWS ? "where.exe" : "which";
+	for (const candidate of ["7zz", "7z", "7za"]) {
+		try {
+			execFileSync(lookup, [candidate], { stdio: "ignore" });
+			return candidate;
+		} catch {}
+	}
+	return null;
+}
+
 function expandZipWithPowerShell(archivePath: string, destination: string): void {
 	execFileSync("pwsh", [
 		"-NoProfile",
@@ -98,6 +109,20 @@ function expandZipWithPowerShell(archivePath: string, destination: string): void
 	], {
 		env: { ...process.env, PI_BACKUP_ARCHIVE: archivePath, PI_BACKUP_DEST: destination },
 	});
+}
+
+function extractArchive(archivePath: string, destination: string): void {
+	const sevenZip = findSevenZip();
+	if (sevenZip) {
+		execFileSync(sevenZip, ["x", "-y", `-o${destination}`, archivePath]);
+		return;
+	}
+	if (archivePath.endsWith(".zip")) {
+		if (IS_WINDOWS) expandZipWithPowerShell(archivePath, destination);
+		else execFileSync("unzip", ["-q", archivePath, "-d", destination]);
+		return;
+	}
+	throw new Error("7zip is required to extract .7z backups and was not found on PATH");
 }
 
 function ensureDirs(externalDir: string) {
@@ -248,17 +273,7 @@ function copyBackupToInternal(backup: BackupInfo): { success: boolean; output: s
 		if (backup.isCompressed) {
 			const tmpDir = join(INTERNAL_BACKUP_DIR, `.tmp-${Date.now()}`);
 			mkdirSync(tmpDir, { recursive: true });
-			if (backup.name.endsWith(".zip")) {
-				if (IS_WINDOWS) {
-					expandZipWithPowerShell(backup.path, tmpDir);
-				} else {
-					execFileSync("unzip", ["-q", backup.path, "-d", tmpDir]);
-				}
-			} else {
-				execFileSync("7z", IS_WINDOWS
-					? ["x", "-y", `-o${tmpDir}`, backup.path]
-					: ["x", `-o${tmpDir}`, backup.path]);
-			}
+			extractArchive(backup.path, tmpDir);
 			const extracted = readdirSync(tmpDir)[0];
 			if (!extracted) throw new Error(`Archive is empty: ${backup.path}`);
 			cpSync(join(tmpDir, extracted), destPath, { recursive: true });
@@ -454,17 +469,7 @@ async function viewManifest(ctx: any, backup: BackupInfo) {
 		const tmpDir = join(INTERNAL_BACKUP_DIR, `.tmp-manifest-${Date.now()}`);
 		mkdirSync(tmpDir, { recursive: true });
 		try {
-			if (backup.name.endsWith(".zip")) {
-				if (IS_WINDOWS) {
-					expandZipWithPowerShell(backup.path, tmpDir);
-				} else {
-					execFileSync("unzip", ["-q", backup.path, "-d", tmpDir]);
-				}
-			} else {
-				execFileSync("7z", IS_WINDOWS
-					? ["x", "-y", `-o${tmpDir}`, backup.path]
-					: ["x", `-o${tmpDir}`, backup.path]);
-			}
+			extractArchive(backup.path, tmpDir);
 			const found = findFile(tmpDir, "MANIFEST.txt");
 			if (!found) throw new Error("MANIFEST.txt not found in archive");
 			content = readFileSync(found, "utf-8");

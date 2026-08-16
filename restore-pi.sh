@@ -60,19 +60,13 @@ elif [[ -f "$BACKUP_ARG" && "$BACKUP_ARG" =~ \.(zip|7z)$ ]]; then
   # Compressed archive: extract to a temp dir first
   STAGE="$(mktemp -d)"
   log "Extracting archive: $BACKUP_ARG"
-  if [[ "$BACKUP_ARG" == *.zip ]]; then
-    if command -v unzip >/dev/null 2>&1; then
-      unzip -q "$BACKUP_ARG" -d "$STAGE"
-    else
-      # 7z can also extract zip; fall back to it
-      local tool="$(pick_extract_tool)"
-      [[ -n "$tool" ]] || { err "No unzip or 7zip available to extract the archive."; exit 1; }
-      "$tool" x -o"$STAGE" "$BACKUP_ARG" >/dev/null
-    fi
-  else
-    local tool="$(pick_extract_tool)"
-    [[ -n "$tool" ]] || { err "7zip is required to extract .7z backups. Install it."; exit 1; }
+  tool="$(pick_extract_tool)"
+  if [[ -n "$tool" ]]; then
     "$tool" x -o"$STAGE" "$BACKUP_ARG" >/dev/null
+  elif [[ "$BACKUP_ARG" == *.zip ]] && command -v unzip >/dev/null 2>&1; then
+    unzip -q "$BACKUP_ARG" -d "$STAGE"
+  else
+    err "No 7zip or native ZIP extractor available for $BACKUP_ARG."; exit 1
   fi
   # The archive holds one top-level pi-backup-* dir
   BACKUP_DIR="$(find "$STAGE" -mindepth 1 -maxdepth 1 -type d | head -1)"
