@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, rmSync, cpSync } from "node:fs";
@@ -88,6 +88,16 @@ return join(PACKAGE_ROOT, IS_WINDOWS ? "backup-pi.ps1" : "backup-pi.sh");
 
 function getRestoreScriptPath(): string {
 return join(PACKAGE_ROOT, IS_WINDOWS ? "restore-pi.ps1" : "restore-pi.sh");
+}
+
+function expandZipWithPowerShell(archivePath: string, destination: string): void {
+	execFileSync("pwsh", [
+		"-NoProfile",
+		"-Command",
+		"Expand-Archive -LiteralPath $env:PI_BACKUP_ARCHIVE -DestinationPath $env:PI_BACKUP_DEST -Force",
+	], {
+		env: { ...process.env, PI_BACKUP_ARCHIVE: archivePath, PI_BACKUP_DEST: destination },
+	});
 }
 
 function ensureDirs(externalDir: string) {
@@ -239,11 +249,18 @@ function copyBackupToInternal(backup: BackupInfo): { success: boolean; output: s
 			const tmpDir = join(INTERNAL_BACKUP_DIR, `.tmp-${Date.now()}`);
 			mkdirSync(tmpDir, { recursive: true });
 			if (backup.name.endsWith(".zip")) {
-				execSync(`unzip -q "${backup.path}" -d "${tmpDir}"`);
+				if (IS_WINDOWS) {
+					expandZipWithPowerShell(backup.path, tmpDir);
+				} else {
+					execFileSync("unzip", ["-q", backup.path, "-d", tmpDir]);
+				}
 			} else {
-				execSync(`7z x -o"${tmpDir}" "${backup.path}" >/dev/null`);
+				execFileSync("7z", IS_WINDOWS
+					? ["x", "-y", `-o${tmpDir}`, backup.path]
+					: ["x", `-o${tmpDir}`, backup.path]);
 			}
 			const extracted = readdirSync(tmpDir)[0];
+			if (!extracted) throw new Error(`Archive is empty: ${backup.path}`);
 			cpSync(join(tmpDir, extracted), destPath, { recursive: true });
 			rmSync(tmpDir, { recursive: true, force: true });
 		} else {
@@ -432,19 +449,25 @@ async function confirmDelete(ctx: any, backup: BackupInfo) {
 }
 
 async function viewManifest(ctx: any, backup: BackupInfo) {
-	let manifestPath: string;
+	let content: string;
 	if (backup.isCompressed) {
 		const tmpDir = join(INTERNAL_BACKUP_DIR, `.tmp-manifest-${Date.now()}`);
 		mkdirSync(tmpDir, { recursive: true });
 		try {
 			if (backup.name.endsWith(".zip")) {
-				execSync(`unzip -q "${backup.path}" "*/MANIFEST.txt" -d "${tmpDir}"`);
+				if (IS_WINDOWS) {
+					expandZipWithPowerShell(backup.path, tmpDir);
+				} else {
+					execFileSync("unzip", ["-q", backup.path, "-d", tmpDir]);
+				}
 			} else {
-				execSync(`7z x -o"${tmpDir}" "${backup.path}" "*/MANIFEST.txt" >/dev/null`);
+				execFileSync("7z", IS_WINDOWS
+					? ["x", "-y", `-o${tmpDir}`, backup.path]
+					: ["x", `-o${tmpDir}`, backup.path]);
 			}
 			const found = findFile(tmpDir, "MANIFEST.txt");
-			if (found) manifestPath = found;
-			else throw new Error("MANIFEST.txt not found in archive");
+			if (!found) throw new Error("MANIFEST.txt not found in archive");
+			content = readFileSync(found, "utf-8");
 		} catch (e: any) {
 			ctx.ui.notify(`Failed to extract manifest: ${e.message}`, "error");
 			rmSync(tmpDir, { recursive: true, force: true });
@@ -452,15 +475,14 @@ async function viewManifest(ctx: any, backup: BackupInfo) {
 		}
 		rmSync(tmpDir, { recursive: true, force: true });
 	} else {
-		manifestPath = join(backup.path, "MANIFEST.txt");
+		const manifestPath = join(backup.path, "MANIFEST.txt");
+		if (!existsSync(manifestPath)) {
+			ctx.ui.notify("No manifest found in backup", "warning");
+			return;
+		}
+		content = readFileSync(manifestPath, "utf-8");
 	}
 
-	if (!existsSync(manifestPath)) {
-		ctx.ui.notify("No manifest found in backup", "warning");
-		return;
-	}
-
-	const content = readFileSync(manifestPath, "utf-8");
 	await ctx.ui.editor(`MANIFEST — ${backup.name}`, content);
 }
 
