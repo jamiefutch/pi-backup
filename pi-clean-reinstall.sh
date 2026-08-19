@@ -85,7 +85,7 @@ main() {
   ok "Clean reinstall complete!"
   echo
   log "Next steps:"
-  log "  1. Restore:  ~/projects/personal/pi-backup/restore-pi.sh <backup-dir>"
+  log "  1. Restore:  ./restore-pi.sh <backup-dir>"
   log "  2. Reinstall npm deps:  cd ~/.pi/agent && npm install"
   log "  3. Verify:  pi --version, /ctx-doctor, /loop-police-status, /scoped-memory-status"
   echo

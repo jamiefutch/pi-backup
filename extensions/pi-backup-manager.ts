@@ -9,7 +9,7 @@ const IS_WINDOWS = process.platform === "win32";
 const PI_ROOT = join(HOME_DIR, ".pi");
 const INTERNAL_BACKUP_DIR = join(PI_ROOT, "backups");
 const SETTINGS_FILE = join(PI_ROOT, "agent", "settings.json");
-const DEFAULT_EXTERNAL_DIR = join(HOME_DIR, "projects", "personal", "pi-utils", "backups");
+const DEFAULT_EXTERNAL_DIR = join(HOME_DIR, "pi-backups");
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 interface BackupInfo {
@@ -542,7 +542,7 @@ The external backup directory is resolved in this order:
 
 1. **BACKUP_ROOT** environment variable (highest priority)
 2. **settings.json** → \`externalBackupDir\` 
-3. **Default**: \`~/projects/personal/pi-utils/backups/\`
+3. **Default**: \`~/pi-backups/\`
 
 Use **⚙️ Configure external backup directory** in the main menu to change the settings.json value.
 
@@ -567,13 +567,13 @@ Use **⚙️ Configure external backup directory** in the main menu to change th
 
 \`\`\`bash
 # Create external backup (uses BACKUP_ROOT or default)
-~/projects/personal/pi-backup/backup-pi.sh
+./backup-pi.sh
 
 # Override backup location
-BACKUP_ROOT=/mnt/backups ~/projects/personal/pi-backup/backup-pi.sh
+BACKUP_ROOT=/mnt/backups ./backup-pi.sh
 
 # Restore from external
-~/projects/personal/pi-backup/restore-pi.sh ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
+./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000
 \`\`\`
 
 ## What Gets Backed Up

@@ -4,8 +4,8 @@
 #
 #  Usage:
 #    .\restore-pi.ps1 <backup-directory-or-archive>
-#    .\restore-pi.ps1 ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000
-#    .\restore-pi.ps1 ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000.zip
+#    .\restore-pi.ps1 ~\pi-backups\pi-backup-20260811-143000
+#    .\restore-pi.ps1 ~\pi-backups\pi-backup-20260811-143000.zip
 # =============================================================
 [CmdletBinding()]
 param(
@@ -17,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 
 # ─── Config ────────────────────────────────────────────────
 $PiRoot = if ($env:PI_ROOT) { $env:PI_ROOT } else { Join-Path $HOME '.pi' }
+$LocalExtRoot = if ($env:LOCAL_EXT_ROOT) { $env:LOCAL_EXT_ROOT } else { Join-Path $HOME 'projects' }
 
 function Log  { Write-Host "[INFO]  $args"     -ForegroundColor Cyan }
 function OK   { Write-Host "[OK]    $args"     -ForegroundColor Green }
@@ -30,8 +31,8 @@ Usage: $($MyInvocation.MyCommand.Name) <backup-directory-or-archive>
 Restores a Pi backup created by backup-pi.ps1
 
 Examples:
-  .\$($MyInvocation.MyCommand.Name) ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000
-  .\$($MyInvocation.MyCommand.Name) ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000.zip
+  .\$($MyInvocation.MyCommand.Name) ~\pi-backups\pi-backup-20260811-143000
+  .\$($MyInvocation.MyCommand.Name) ~\pi-backups\pi-backup-20260811-143000.zip
 
 Accepts either an uncompressed backup directory or a compressed zip/7z archive
 (as produced by backup-pi.ps1).
@@ -202,7 +203,7 @@ Log "5/8  Local extension source code..."
 $localSrc = Join-Path $BackupDir 'local-extensions'
 if (Test-Path -LiteralPath $localSrc -PathType Container) {
     foreach ($ext in Get-ChildItem -LiteralPath $localSrc -Directory) {
-        $dst = Join-Path $HOME "projects\personal\$($ext.Name)"
+        $dst = Join-Path $LocalExtRoot $ext.Name
         New-Item -ItemType Directory -Path $dst -Force | Out-Null
         Copy-Tree $ext.FullName $dst
         OK "  $($ext.Name)/ restored"

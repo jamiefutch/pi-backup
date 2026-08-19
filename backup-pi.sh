@@ -7,7 +7,8 @@ set -euo pipefail
 
 # ─── Config ──────────────────────────────────────────────────────
 PI_ROOT="${PI_ROOT:-$HOME/.pi}"
-BACKUP_ROOT="${BACKUP_ROOT:-$HOME/projects/personal/pi-utils/backups}"
+BACKUP_ROOT="${BACKUP_ROOT:-$HOME/pi-backups}"
+LOCAL_EXT_ROOT="${LOCAL_EXT_ROOT:-$HOME/projects}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$BACKUP_ROOT/pi-backup-$TIMESTAMP"   # staging dir (compressed into archive below)
 KEEP_UNCOMPRESSED="${KEEP_UNCOMPRESSED:-0}"  # set to 1 to keep the staging dir after archiving
@@ -131,14 +132,14 @@ main() {
     "pi-context-docs"
   )
   for ext in "${local_exts[@]}"; do
-    if [[ -d "$HOME/projects/personal/$ext" ]]; then
+    if [[ -d "$LOCAL_EXT_ROOT/$ext" ]]; then
       mkdir -p "$BACKUP_DIR/local-extensions/$ext"
       # Copy source, exclude node_modules, dist, build, .git, coverage
       rsync -a --exclude 'node_modules' --exclude 'dist' --exclude 'build' --exclude '.git' --exclude 'coverage' --exclude '*.log' \
-        "$HOME/projects/personal/$ext/" "$BACKUP_DIR/local-extensions/$ext/"
+        "$LOCAL_EXT_ROOT/$ext/" "$BACKUP_DIR/local-extensions/$ext/"
       ok "  $ext/ (source only)"
     else
-      warn "  $ext — not found at ~/projects/personal/$ext"
+      warn "  $ext — not found at $LOCAL_EXT_ROOT/$ext"
     fi
   done
 
@@ -223,7 +224,7 @@ EOF
   [[ "$KEEP_UNCOMPRESSED" == "1" ]] && log "Staging:  $BACKUP_DIR"
   echo
   log "To restore after reinstall:"
-  log "  ~/projects/personal/pi-backup/restore-pi.sh $ARCHIVE"
+  log "  ./restore-pi.sh $ARCHIVE"
   echo
 }
 

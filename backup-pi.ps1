@@ -15,7 +15,8 @@ $ErrorActionPreference = 'Stop'
 
 # ─── Config ────────────────────────────────────────────────
 $PiRoot   = if ($env:PI_ROOT)    { $env:PI_ROOT }    else { Join-Path $HOME '.pi' }
-$BackupRoot = if ($env:BACKUP_ROOT) { $env:BACKUP_ROOT } else { Join-Path $HOME 'projects\personal\pi-utils\backups' }
+$BackupRoot = if ($env:BACKUP_ROOT) { $env:BACKUP_ROOT } else { Join-Path $HOME 'pi-backups' }
+$LocalExtRoot = if ($env:LOCAL_EXT_ROOT) { $env:LOCAL_EXT_ROOT } else { Join-Path $HOME 'projects' }
 $Timestamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
 $ArchiveBase = "pi-backup-$Timestamp"
 $ArchiveDir  = Join-Path $BackupRoot $ArchiveBase
@@ -127,7 +128,7 @@ if (Test-Path -LiteralPath $projMem) {
 Log "5/8  Local extension source code..."
 $localExts = @('pi-timeout', 'pi-chunk', 'pi-hermes-memory-cleanup', 'pi-context-docs')
 foreach ($ext in $localExts) {
-    $src = Join-Path $HOME "projects\personal\$ext"
+    $src = Join-Path $LocalExtRoot $ext
     if (Test-Path -LiteralPath $src) {
         $dst = Join-Path $ArchiveDir "local-extensions\$ext"
         $extDstDir = Join-Path $ArchiveDir 'local-extensions'
@@ -136,7 +137,7 @@ foreach ($ext in $localExts) {
         Copy-Tree $src $dst -excludeDirs @('node_modules','dist','build','coverage','.git') -excludeFiles @('*.log')
         OK "  $ext/ (source only)"
     } else {
-        Warn "  $ext - not found at ~/projects/personal/$ext"
+        Warn "  $ext - not found at $LocalExtRoot/$ext"
     }
 }
 
@@ -241,5 +242,5 @@ if ($archivePath) {
 if ($KeepUncompressed) { Log "Staging:  $ArchiveDir" }
 Write-Host ""
 Log "To restore after reinstall:"
-Log "  ~/projects/personal/pi-backup/restore-pi.ps1 $archivePath"
+Log "  .\restore-pi.ps1 $archivePath"
 Write-Host ""

@@ -6,6 +6,7 @@ set -euo pipefail
 
 # ─── Config ──────────────────────────────────────────────────────
 PI_ROOT="${PI_ROOT:-$HOME/.pi}"
+LOCAL_EXT_ROOT="${LOCAL_EXT_ROOT:-$HOME/projects}"
 
 # ─── Colors ──────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -27,9 +28,9 @@ Usage: $0 <backup-directory-or-archive>
 Restores a Pi backup created by backup-pi.sh
 
 Examples:
-  $0 ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
-  $0 ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000.7z
-  $0 ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000.zip
+  $0 ~/pi-backups/pi-backup-20260811-143000
+  $0 ~/pi-backups/pi-backup-20260811-143000.7z
+  $0 ~/pi-backups/pi-backup-20260811-143000.zip
 
 Accepts either an uncompressed backup directory or a compressed
 zip/7z archive (as produced by backup-pi.sh).
@@ -171,8 +172,8 @@ main() {
     for ext in "$BACKUP_DIR/local-extensions"/*/; do
       [[ -d "$ext" ]] || continue
       name="$(basename "$ext")"
-      mkdir -p "$HOME/projects/personal/$name"
-      rsync -a "$ext/" "$HOME/projects/personal/$name/"
+      mkdir -p "$LOCAL_EXT_ROOT/$name"
+      rsync -a "$ext/" "$LOCAL_EXT_ROOT/$name/"
       ok "  $name/ restored"
     done
   else

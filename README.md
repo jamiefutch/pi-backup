@@ -75,7 +75,7 @@ Opens the **Pi Backup Manager** interactive menu:
 
 ```
 Pi Backup Manager — 8 backups (1 internal, 7 external)
-External dir: ~/projects/personal/pi-utils/backups
+External dir: ~/pi-backups
 
  → 📦 Create internal backup  (~/.pi/backups/  — quick rollback)
    💾 Create external backup  (survives reinstall)
@@ -135,7 +135,7 @@ Backup: pi-backup-20260812-112019.7z
 | Location | Path | Survives Clean Reinstall? | Format |
 |----------|------|---------------------------|--------|
 | **Internal** | `~/.pi/backups/` | ❌ NO (wiped by `rm -rf ~/.pi`) | Uncompressed dirs |
-| **External** | `~/projects/personal/pi-utils/backups/` | ✅ YES | Compressed (.7z/.zip) |
+| **External** | `~/pi-backups/` | ✅ YES | Compressed (.7z/.zip) |
 
 > **Key point**: Always create an **external backup** before a clean reinstall. Internal backups are for quick rollbacks during normal use only.
 
@@ -143,17 +143,17 @@ Backup: pi-backup-20260812-112019.7z
 
 #### 1. Backup (before reinstall)
 ```bash
-~/projects/personal/pi-backup/backup-pi.sh
+./backup-pi.sh
 ```
 
 #### 2. Clean Reinstall
 ```bash
-~/projects/personal/pi-backup/pi-clean-reinstall.sh
+./pi-clean-reinstall.sh
 ```
 
 #### 3. Restore a directory, `.7z` archive, or `.zip` archive
 ```bash
-~/projects/personal/pi-backup/restore-pi.sh ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000.7z
+./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000.7z
 ```
 
 #### 4. Reinstall npm deps + verify
@@ -167,7 +167,7 @@ pi --version
 
 ### Windows (PowerShell)
 
-On Windows, use the `.ps1` scripts from PowerShell 7 (`pwsh`). The backup data directory defaults to `~/projects/personal/pi-utils/backups`.
+On Windows, use the `.ps1` scripts from PowerShell 7 (`pwsh`). The backup data directory defaults to `~/pi-backups`.
 
 ```powershell
 # 1. Backup (before reinstall)
@@ -177,7 +177,7 @@ On Windows, use the `.ps1` scripts from PowerShell 7 (`pwsh`). The backup data d
 .\pi-clean-reinstall.ps1
 
 # 3. Restore
-.\restore-pi.ps1 ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000
+.\restore-pi.ps1 ~\pi-backups\pi-backup-20260811-143000
 
 # 4. Reinstall npm deps + verify
 cd ~\.pi\agent; npm install
@@ -201,7 +201,7 @@ $env:PI_ROOT='C:\Users\you\.pi'; $env:BACKUP_ROOT='D:\pi-backups'; .\backup-pi.p
 | **Extension configs** | `pi-hermes-memory-cleanup/scoped-memory.json`, `loop-police.json`, `pi-rtk/config.json`, `context-mode/config.json`, `pi-timeout/config.json`, `pi-context-viewer/config.json`, `pix-optimizer/config.json`, `pi-nvidia-nim/config.json` |
 | **Global skills** | `~/.pi/agent/skills/` |
 | **Project skills & memory** | `~/.pi/agent/projects-memory/<project>/` |
-| **Local extension source** | `~/projects/personal/pi-timeout/`, `pi-chunk/`, `pi-hermes-memory-cleanup/`, `pi-context-docs/` |
+| **Local extension source** | `$LOCAL_EXT_ROOT/pi-timeout/`, `pi-chunk/`, `pi-hermes-memory-cleanup/`, `pi-context-docs/` (defaults to `~/projects/`) |
 | **npm manifests** | `package.json`, `package-lock.json`, `npm-shrinkwrap.json` from `~/.pi/agent/npm/` |
 | **Hermes memory (active)** | `MEMORY.md`, `USER.md`, `failures.md`, `retired-*.md` |
 | **Cleanup backups** | Last 5 from `~/.pi/agent/hermes-cleanup/` |
@@ -211,11 +211,11 @@ The backup script output:
 ════════════════════════════════════════════════════════════
   Pi Complete Backup
 ════════════════════════════════════════════════════════════
-Source:      /Users/jamiefutch/.pi
-Destination: ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
+Source:      ~/.pi
+Destination: ~/pi-backups/pi-backup-20260811-143000
 ...
 Backup complete!
-Location: ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
+Location: ~/pi-backups/pi-backup-20260811-143000
 Size:     12M
 Files:    347
 ```
@@ -235,7 +235,7 @@ Files:    347
 ## Backup Location
 
 ```
-~/projects/personal/pi-utils/backups/
+~/pi-backups/
 ├── pi-backup-20260811-143000/
 │   ├── MANIFEST.txt
 │   ├── settings.json
@@ -261,7 +261,7 @@ The external backup location is resolved in this priority order:
 
 1. **`BACKUP_ROOT`** environment variable (highest priority)
 2. **`externalBackupDir`** key in `~/.pi/agent/settings.json`
-3. **Default**: `~/projects/personal/pi-utils/backups/`
+3. **Default**: `~/pi-backups/`
 
 ```json
 // ~/.pi/agent/settings.json
@@ -292,13 +292,14 @@ If the default directory already contains backups, it is treated as configured a
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PI_ROOT` | `~/.pi` | Override Pi root directory |
-| `BACKUP_ROOT` | `~/projects/personal/pi-utils/backups` | Override backup destination (highest priority for the TUI too) |
+| `BACKUP_ROOT` | `~/pi-backups` | Override backup destination (highest priority for the TUI too) |
+| `LOCAL_EXT_ROOT` | `~/projects` | Override the directory containing local extension source repositories |
 | `KEEP_UNCOMPRESSED` | `0` | Keep the uncompressed staging directory after external backup; the TUI sets this automatically for internal backups |
 | `PKG_MANAGER` | `bun` | Package manager used by the clean-reinstall scripts (`bun`, `npm`, etc.) |
 
 ```bash
 # Custom locations
-PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ~/projects/personal/pi-backup/backup-pi.sh
+PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ./backup-pi.sh
 ```
 
 ---
@@ -307,10 +308,10 @@ PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ~/projects/personal/pi-backup/backu
 
 ```bash
 # Daily backup at 3 AM
-0 3 * * * ~/projects/personal/pi-backup/backup-pi.sh >> ~/pi-backup.log 2>&1
+0 3 * * * ./backup-pi.sh >> ~/pi-backup.log 2>&1
 
 # Keep last 30 backups
-0 4 * * * find ~/projects/personal/pi-utils/backups -maxdepth 1 -type d -name 'pi-backup-*' -mtime +30 -exec rm -rf {} \;
+0 4 * * * find ~/pi-backups -maxdepth 1 -type d -name 'pi-backup-*' -mtime +30 -exec rm -rf {} \;
 ```
 
 ---
