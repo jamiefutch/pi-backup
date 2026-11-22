@@ -89,9 +89,22 @@ make_fixture() {
   echo '{"name":"ext1"}'                 > "$a/npm/ext1/package.json"
   echo "junk"                            > "$a/npm/node_modules/junk/index.js"
   echo "session"                         > "$a/sessions/s1.jsonl"
+  echo '{"name":"dep"}'                  > "$a/npm/node_modules/junk/package.json"
+  echo '{"lock":1}'                      > "$a/npm/ext1/package-lock.json"
+  echo "# failures"                      > "$a/pi-hermes-memory/failures.md"
+  echo "# retired"                       > "$a/pi-hermes-memory/retired-memory.md"
+  echo '{"trust":[]}'                    > "$a/trust.json"
+  mkdir -p "$a/pi-hermes-memory-cleanup"; echo '{"s":1}' > "$a/pi-hermes-memory-cleanup/scoped-memory.json"
+  local d
+  for d in 20260101 20260102 20260103 20260104 20260105 20260106 20260107; do
+    mkdir -p "$a/hermes-cleanup/$d"; echo "cleanup $d" > "$a/hermes-cleanup/$d/note.txt"
+  done
+  mkdir -p "$a/hermes-cleanup/not-a-timestamp"; echo x > "$a/hermes-cleanup/not-a-timestamp/f"
   mkdir -p "$LOCAL_EXT_ROOT/pi-timeout/src" "$LOCAL_EXT_ROOT/pi-timeout/node_modules/x" "$LOCAL_EXT_ROOT/pi-timeout/.git"
   echo "export {}"                       > "$LOCAL_EXT_ROOT/pi-timeout/src/index.ts"
   echo "dep"                             > "$LOCAL_EXT_ROOT/pi-timeout/node_modules/x/i.js"
+  echo "ignored"                         > "$LOCAL_EXT_ROOT/pi-timeout/.gitignore"
+  echo "log"                             > "$LOCAL_EXT_ROOT/pi-timeout/debug.log"
   echo "gitjunk"                         > "$LOCAL_EXT_ROOT/pi-timeout/.git/HEAD"
 }
 

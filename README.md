@@ -197,16 +197,18 @@ $env:PI_ROOT='C:\Users\you\.pi'; $env:BACKUP_ROOT='D:\pi-backups'; .\backup-pi.p
 
 ## What Gets Backed Up
 
+The list lives in one file, [`backup-manifest.txt`](backup-manifest.txt), read by all four scripts; a test keeps this table in sync with it.
+
 | Category | Paths |
 |----------|-------|
 | **Core config** | `settings.json`, `auth.json`, `models.json`, `trust.json`, `keybindings.json`, `pix.json`, `optimizer.json`, `lmstudio.json.bak`, `hermes-memory-config.json`, `pi.code-workspace` |
 | **Extension configs** | `pi-hermes-memory-cleanup/scoped-memory.json`, `loop-police.json`, `pi-rtk/config.json`, `context-mode/config.json`, `pi-timeout/config.json`, `pi-context-viewer/config.json`, `pix-optimizer/config.json`, `pi-nvidia-nim/config.json` |
 | **Global skills** | `~/.pi/agent/skills/` |
 | **Project skills & memory** | `~/.pi/agent/projects-memory/<project>/` |
-| **Local extension source** | `$LOCAL_EXT_ROOT/pi-timeout/`, `pi-chunk/`, `pi-hermes-memory-cleanup/`, `pi-context-docs/` (defaults to `~/projects/`) |
-| **npm manifests** | `package.json`, `package-lock.json`, `npm-shrinkwrap.json` from `~/.pi/agent/npm/` |
-| **Hermes memory (active)** | `MEMORY.md`, `USER.md`, `failures.md`, `retired-*.md` |
-| **Cleanup backups** | Last 5 from `~/.pi/agent/hermes-cleanup/` |
+| **Local extension source** | `$LOCAL_EXT_ROOT/pi-timeout/`, `pi-chunk/`, `pi-hermes-memory-cleanup/`, `pi-context-docs/` (defaults to `~/projects/`; `node_modules`, `dist`, `build`, `.git`, `coverage` and `*.log` are skipped) |
+| **npm manifests** | `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml` from `~/.pi/agent/npm/` (never `node_modules`) |
+| **Hermes memory (active)** | `MEMORY.md`, `USER.md`, `failures.md`, `retired-failures.md`, `retired-memory.md` |
+| **Cleanup backups** | Last 5 timestamped (`20*`) directories from `~/.pi/agent/hermes-cleanup/` |
 
 The backup script output:
 ```

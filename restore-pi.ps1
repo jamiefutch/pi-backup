@@ -24,6 +24,34 @@ function OK   { Write-Host "[OK]    $args"     -ForegroundColor Green }
 function Warn { Write-Host "[WARN]  $args"     -ForegroundColor Yellow }
 function Err  { Write-Host "[ERR]   $args"     -ForegroundColor Red }
 
+# ─── Manifest ──────────────────────────────────────────────
+# What gets backed up / restored is defined once, in backup-manifest.txt (shared with the bash scripts).
+$ManifestFile = Join-Path $PSScriptRoot 'backup-manifest.txt'
+if (-not (Test-Path -LiteralPath $ManifestFile)) {
+    Write-Host "[ERR]   backup-manifest.txt not found next to this script" -ForegroundColor Red
+    exit 1
+}
+
+function Read-Manifest([string]$path) {
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        $l = $line.TrimEnd("`r")
+        if ($l -eq '' -or $l.StartsWith('#')) { continue }
+        $p = $l.Split('|')
+        [pscustomobject]@{
+            Kind = $p[0]
+            A    = if ($p.Count -gt 1) { $p[1] } else { '' }
+            B    = if ($p.Count -gt 2) { $p[2] } else { '' }
+            C    = if ($p.Count -gt 3) { $p[3] } else { '' }
+        }
+    }
+}
+
+# Manifest paths use "/"; join them under a root with the platform separator.
+function P([string]$root, [string]$rel) {
+    Join-Path $root ($rel.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+}
+
+
 function Show-Usage {
     Write-Host @"
 Usage: $($MyInvocation.MyCommand.Name) <backup-directory-or-archive>
@@ -199,98 +227,58 @@ Log "  Restoring Pi from backup"
 Log "================================================================"
 Write-Host ""
 
-# ── 1. Core Config Files ──────────────────────────────────
-Log "1/8  Core configuration files..."
 $agentDir = Join-Path $PiRoot 'agent'
-Restore-File (Join-Path $BackupDir 'settings.json')              (Join-Path $agentDir 'settings.json')
-Restore-File (Join-Path $BackupDir 'auth.json')                  (Join-Path $agentDir 'auth.json')
-Restore-File (Join-Path $BackupDir 'models.json')                (Join-Path $agentDir 'models.json')
-Restore-File (Join-Path $BackupDir 'trust.json')                 (Join-Path $agentDir 'trust.json')
-Restore-File (Join-Path $BackupDir 'keybindings.json')           (Join-Path $agentDir 'keybindings.json')
-Restore-File (Join-Path $BackupDir 'pix.json')                   (Join-Path $agentDir 'pix.json')
-Restore-File (Join-Path $BackupDir 'optimizer.json')             (Join-Path $agentDir 'optimizer.json')
-Restore-File (Join-Path $BackupDir 'lmstudio.json.bak')          (Join-Path $agentDir 'lmstudio.json.bak')
-Restore-File (Join-Path $BackupDir 'hermes-memory-config.json')  (Join-Path $agentDir 'hermes-memory-config.json')
-Restore-File (Join-Path $BackupDir 'pi.code-workspace')          (Join-Path $agentDir 'pi.code-workspace')
-
-$restoredAuth = Join-Path $agentDir 'auth.json'
-if ((Test-Path -LiteralPath (Join-Path $BackupDir 'auth.json')) -and (Test-Path -LiteralPath $restoredAuth) -and -not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
-    try { [System.IO.File]::SetUnixFileMode($restoredAuth, [System.IO.UnixFileMode]'UserRead,UserWrite') } catch { Warn "  could not restrict permissions on auth.json: $($_.Exception.Message)" }
-}
-
-# ── 2. Extension Configs ──────────────────────────────────
-Log "2/8  Extension configurations..."
-Restore-File (Join-Path $BackupDir 'pi-hermes-memory-cleanup\scoped-memory.json') (Join-Path $agentDir 'pi-hermes-memory-cleanup\scoped-memory.json')
-Restore-File (Join-Path $BackupDir 'loop-police.json')           (Join-Path $agentDir 'loop-police.json')
-Restore-File (Join-Path $BackupDir 'pi-rtk\config.json')         (Join-Path $agentDir 'pi-rtk\config.json')
-Restore-File (Join-Path $BackupDir 'context-mode\config.json')   (Join-Path $agentDir 'context-mode\config.json')
-Restore-File (Join-Path $BackupDir 'pi-timeout\config.json')     (Join-Path $agentDir 'pi-timeout\config.json')
-Restore-File (Join-Path $BackupDir 'pi-context-viewer\config.json') (Join-Path $agentDir 'pi-context-viewer\config.json')
-Restore-File (Join-Path $BackupDir 'pix-optimizer\config.json')  (Join-Path $agentDir 'pix-optimizer\config.json')
-Restore-File (Join-Path $BackupDir 'pi-nvidia-nim\config.json')  (Join-Path $agentDir 'pi-nvidia-nim\config.json')
-
-# ── 3. Global Skills ──────────────────────────────────────
-Log "3/8  Global skills..."
-Restore-Dir (Join-Path $BackupDir 'skills')                      (Join-Path $agentDir 'skills')
-
-# ── 4. Project Skills & Memory ────────────────────────────
-Log "4/8  Project skills & memory..."
-$projSrc = Join-Path $BackupDir 'projects-memory'
-if (Test-Path -LiteralPath $projSrc -PathType Container) {
-    Restore-Dir $projSrc (Join-Path $agentDir 'projects-memory')
-    OK "  projects-memory/ restored"
-} else {
-    Warn "  No project memory in backup"
-}
-
-# ── 5. Local Extensions ───────────────────────────────────
-Log "5/8  Local extension source code..."
-$localSrc = Join-Path $BackupDir 'local-extensions'
-if (Test-Path -LiteralPath $localSrc -PathType Container) {
-    foreach ($ext in Get-ChildItem -LiteralPath $localSrc -Directory) {
-        $dst = Join-Path $LocalExtRoot $ext.Name
-        New-Item -ItemType Directory -Path $dst -Force | Out-Null
-        Copy-Tree $ext.FullName $dst
-        OK "  $($ext.Name)/ restored"
+$entries = @(Read-Manifest $ManifestFile)
+$total = @($entries | Where-Object { $_.Kind -eq 'section' }).Count
+$step = 0
+foreach ($e in $entries) {
+    switch ($e.Kind) {
+        'section' { $step++; Log "$step/$total  $($e.A)..." }
+        'file' {
+            $dst = P $PiRoot $e.A
+            $src = P $BackupDir $e.B
+            Restore-File $src $dst
+            # Credentials: keep a restored auth.json private to this user (Unix)
+            if ($e.B -eq 'auth.json' -and (Test-Path -LiteralPath $src) -and (Test-Path -LiteralPath $dst) -and -not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
+                try { [System.IO.File]::SetUnixFileMode($dst, [System.IO.UnixFileMode]'UserRead,UserWrite') } catch { Warn "  could not restrict permissions on auth.json: $($_.Exception.Message)" }
+            }
+        }
+        'dir' { Restore-Dir (P $BackupDir $e.B) (P $PiRoot $e.A) }
+        { $_ -in 'dir-each','recent' } {
+            $src = P $BackupDir $e.B
+            if (Test-Path -LiteralPath $src -PathType Container) {
+                foreach ($sub in Get-ChildItem -LiteralPath $src -Directory) {
+                    Restore-Dir $sub.FullName (Join-Path (P $PiRoot $e.A) $sub.Name)
+                }
+                OK "  $($e.B)/ restored"
+            } else {
+                Warn "  No $($e.B) in backup"
+            }
+        }
+        'local-ext' {
+            $src = P $BackupDir "local-extensions/$($e.A)"
+            if (Test-Path -LiteralPath $src -PathType Container) {
+                $dst = Join-Path $LocalExtRoot $e.A
+                New-Item -ItemType Directory -Path $dst -Force | Out-Null
+                Copy-Tree $src $dst
+                OK "  $($e.A)/ restored"
+            } else {
+                Warn "  $($e.A) - not in backup, skipping"
+            }
+        }
+        'npm' {
+            $src = P $BackupDir $e.B
+            if (Test-Path -LiteralPath $src -PathType Container) {
+                $dst = P $PiRoot $e.A
+                New-Item -ItemType Directory -Path $dst -Force | Out-Null
+                Copy-Tree $src $dst
+                OK "  npm manifests restored (run 'npm install' to reinstall deps)"
+            } else {
+                Warn "  No npm manifests in backup"
+            }
+        }
+        default { Warn "Unknown manifest entry type: $($e.Kind)" }
     }
-} else {
-    Warn "  No local extensions in backup"
-}
-
-# ── 6. npm Extension Manifests ────────────────────────────
-Log "6/8  npm extension manifests..."
-$npmSrc = Join-Path $BackupDir 'npm-manifests'
-if (Test-Path -LiteralPath $npmSrc -PathType Container) {
-    $npmDst = Join-Path $agentDir 'npm'
-    New-Item -ItemType Directory -Path $npmDst -Force | Out-Null
-    Copy-Tree $npmSrc $npmDst
-    OK "  npm manifests restored (run 'npm install' to reinstall deps)"
-} else {
-    Warn "  No npm manifests in backup"
-}
-
-# ── 7. Hermes Memory ──────────────────────────────────────
-Log "7/8  Hermes memory (active files)..."
-$hermesSrc = Join-Path $BackupDir 'pi-hermes-memory'
-if (Test-Path -LiteralPath $hermesSrc -PathType Container) {
-    $hermesDst = Join-Path $agentDir 'pi-hermes-memory'
-    New-Item -ItemType Directory -Path $hermesDst -Force | Out-Null
-    foreach ($f in @('MEMORY.md','USER.md','failures.md','retired-failures.md','retired-memory.md')) {
-        Restore-File (Join-Path $hermesSrc $f) (Join-Path $hermesDst $f)
-    }
-} else {
-    Warn "  No Hermes memory in backup"
-}
-
-# ── 8. Hermes-cleanup Backups ─────────────────────────────
-Log "8/8  Hermes-cleanup backups..."
-$cleanupSrc = Join-Path $BackupDir 'hermes-cleanup'
-if (Test-Path -LiteralPath $cleanupSrc -PathType Container) {
-    foreach ($d in Get-ChildItem -LiteralPath $cleanupSrc -Directory) {
-        Restore-Dir $d.FullName (Join-Path $agentDir "hermes-cleanup\$($d.Name)")
-    }
-} else {
-    Warn "  No cleanup backups in backup"
 }
 
 # ── Verify ────────────────────────────────────────────────

@@ -1,0 +1,61 @@
+# pi-backup manifest: the single source of truth for what is backed up and restored.
+# Read by backup-pi.sh, restore-pi.sh, backup-pi.ps1 and restore-pi.ps1.
+# LF line endings only (enforced by .gitattributes). Paths use "/" on every platform.
+# Paths on the left are relative to PI_ROOT (default ~/.pi); the right side is relative to the backup.
+#
+#   section|<title>                      starts a numbered step in the script output
+#   file|<pi path>|<backup path>         one file; missing files are skipped with a warning
+#   dir|<pi path>|<backup path>          a whole directory; replaced on restore
+#   dir-each|<pi path>|<backup path>     each sub-directory is backed up / replaced separately
+#   local-ext|<name>                     source tree under LOCAL_EXT_ROOT (node_modules, dist, build, .git, coverage, *.log excluded)
+#   npm|<pi path>|<backup path>          package.json and lockfiles only (max depth 3), never node_modules
+#   recent|<pi path>|<backup path>|<n>   the n newest sub-directories whose name starts with "20" (timestamps)
+#
+# Keep README.md "What Gets Backed Up" in sync; tests/sh/manifest.test.sh checks it.
+
+section|Core configuration files
+file|agent/settings.json|settings.json
+file|agent/auth.json|auth.json
+file|agent/models.json|models.json
+file|agent/trust.json|trust.json
+file|agent/keybindings.json|keybindings.json
+file|agent/pix.json|pix.json
+file|agent/optimizer.json|optimizer.json
+file|agent/lmstudio.json.bak|lmstudio.json.bak
+file|agent/hermes-memory-config.json|hermes-memory-config.json
+file|agent/pi.code-workspace|pi.code-workspace
+
+section|Extension configurations
+file|agent/pi-hermes-memory-cleanup/scoped-memory.json|pi-hermes-memory-cleanup/scoped-memory.json
+file|agent/loop-police.json|loop-police.json
+file|agent/pi-rtk/config.json|pi-rtk/config.json
+file|agent/context-mode/config.json|context-mode/config.json
+file|agent/pi-timeout/config.json|pi-timeout/config.json
+file|agent/pi-context-viewer/config.json|pi-context-viewer/config.json
+file|agent/pix-optimizer/config.json|pix-optimizer/config.json
+file|agent/pi-nvidia-nim/config.json|pi-nvidia-nim/config.json
+
+section|Global skills
+dir|agent/skills|skills
+
+section|Project skills & memory
+dir-each|agent/projects-memory|projects-memory
+
+section|Local extension source code
+local-ext|pi-timeout
+local-ext|pi-chunk
+local-ext|pi-hermes-memory-cleanup
+local-ext|pi-context-docs
+
+section|npm extension manifests
+npm|agent/npm|npm-manifests
+
+section|Hermes memory (active files)
+file|agent/pi-hermes-memory/MEMORY.md|pi-hermes-memory/MEMORY.md
+file|agent/pi-hermes-memory/USER.md|pi-hermes-memory/USER.md
+file|agent/pi-hermes-memory/failures.md|pi-hermes-memory/failures.md
+file|agent/pi-hermes-memory/retired-failures.md|pi-hermes-memory/retired-failures.md
+file|agent/pi-hermes-memory/retired-memory.md|pi-hermes-memory/retired-memory.md
+
+section|Recent hermes-cleanup backups (last 5)
+recent|agent/hermes-cleanup|hermes-cleanup|5

@@ -70,7 +70,14 @@ ok()    { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERR]${NC}  $*"; }
 
+# ─── Manifest ────────────────────────────────────────────────────
+# What gets backed up is defined once, in backup-manifest.txt (shared with restore).
+MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backup-manifest.txt"
+[[ -f "$MANIFEST_FILE" ]] || { echo "[ERR] backup-manifest.txt not found next to $0" >&2; exit 1; }
+
 # ─── Helpers ─────────────────────────────────────────────────────
+strip_cr() { printf '%s' "${1%$'\r'}"; }
+
 copy_if_exists() {
   local src="$1" dst="$2"
   if [[ -e "$src" ]]; then
@@ -93,6 +100,91 @@ copy_dir_if_exists() {
   fi
 }
 
+# Portable tree copy with exclusions (no rsync needed): tar pipe.
+copy_source_tree() {
+  local src="$1" dst="$2"
+  mkdir -p "$dst"
+  (cd "$src" && tar -cf - --exclude=node_modules --exclude=dist --exclude=build --exclude=.git \
+      --exclude=coverage --exclude='*.log' .) | (cd "$dst" && tar -xf -)
+}
+
+# auth.json holds credentials: optionally excluded, always private, always flagged.
+backup_auth() {
+  local src="$1" dst="$2"
+  if [[ "${PI_BACKUP_EXCLUDE_AUTH:-0}" == "1" ]]; then
+    warn "  auth.json — excluded (PI_BACKUP_EXCLUDE_AUTH=1)"
+    return 0
+  fi
+  copy_if_exists "$src" "$dst"
+  if [[ -f "$dst" ]]; then
+    chmod 600 "$dst"
+    warn "  auth.json holds your API credentials and is included in this backup."
+    warn "  Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out."
+  fi
+}
+
+backup_manifest_entries() {
+  local total step=0 kind f1 f2 f3
+  total="$(grep -c '^section|' "$MANIFEST_FILE" || true)"
+  while IFS='|' read -r kind f1 f2 f3 || [[ -n "$kind" ]]; do
+    kind="$(strip_cr "$kind")"; f1="$(strip_cr "${f1:-}")"; f2="$(strip_cr "${f2:-}")"; f3="$(strip_cr "${f3:-}")"
+    case "$kind" in
+      ''|'#'*) continue ;;
+      section)
+        step=$((step+1)); log "$step/$total  $f1..." ;;
+      file)
+        if [[ "$f2" == "auth.json" ]]; then backup_auth "$PI_ROOT/$f1" "$BACKUP_DIR/$f2"
+        else copy_if_exists "$PI_ROOT/$f1" "$BACKUP_DIR/$f2"; fi ;;
+      dir)
+        copy_dir_if_exists "$PI_ROOT/$f1" "$BACKUP_DIR/$f2" ;;
+      dir-each)
+        if [[ -d "$PI_ROOT/$f1" ]]; then
+          mkdir -p "$BACKUP_DIR/$f2"
+          local sub name
+          for sub in "$PI_ROOT/$f1"/*/; do
+            [[ -d "$sub" ]] || continue
+            name="$(basename "$sub")"
+            copy_dir_if_exists "$sub" "$BACKUP_DIR/$f2/$name"
+          done
+          ok "  $f2/ ($(ls -1 "$BACKUP_DIR/$f2" 2>/dev/null | wc -l | tr -d ' ') projects)"
+        else
+          warn "  $f2/ — not found"
+        fi ;;
+      local-ext)
+        if [[ -d "$LOCAL_EXT_ROOT/$f1" ]]; then
+          copy_source_tree "$LOCAL_EXT_ROOT/$f1" "$BACKUP_DIR/local-extensions/$f1"
+          ok "  $f1/ (source only)"
+        else
+          warn "  $f1 — not found at $LOCAL_EXT_ROOT/$f1"
+        fi ;;
+      npm)
+        if [[ -d "$PI_ROOT/$f1" ]]; then
+          # Only package.json and lockfiles, never node_modules
+          local f rel
+          while IFS= read -r f; do
+            rel="${f#$PI_ROOT/$f1/}"
+            mkdir -p "$BACKUP_DIR/$f2/$(dirname "$rel")"
+            cp "$f" "$BACKUP_DIR/$f2/$rel"
+          done < <(find "$PI_ROOT/$f1" -maxdepth 3 -type f -not -path '*/node_modules/*' \( -name "package.json" -o -name "package-lock.json" -o -name "npm-shrinkwrap.json" -o -name "pnpm-lock.yaml" \))
+          ok "  npm manifests (package.json, lockfiles)"
+        else
+          warn "  $(basename "$f1")/ — not found"
+        fi ;;
+      recent)
+        if [[ -d "$PI_ROOT/$f1" ]]; then
+          mkdir -p "$BACKUP_DIR/$f2"
+          local d
+          while IFS= read -r d; do
+            copy_dir_if_exists "$d" "$BACKUP_DIR/$f2/$(basename "$d")"
+          done < <(find "$PI_ROOT/$f1" -maxdepth 1 -type d -name "20*" | sort -r | head -n "${f3:-5}")
+        else
+          warn "  $(basename "$f1")/ — not found"
+        fi ;;
+      *) warn "Unknown manifest entry type: $kind" ;;
+    esac
+  done < "$MANIFEST_FILE"
+}
+
 # ─── Main ────────────────────────────────────────────────────────
 main() {
   echo
@@ -106,117 +198,7 @@ main() {
   mkdir -p "$BACKUP_DIR"
   STAGING_CREATED=1
 
-  # ── 1. Core Config Files ──────────────────────────────────────
-  log "1/8  Core configuration files..."
-  copy_if_exists "$PI_ROOT/agent/settings.json"           "$BACKUP_DIR/settings.json"
-  if [[ "${PI_BACKUP_EXCLUDE_AUTH:-0}" == "1" ]]; then
-    warn "  auth.json — excluded (PI_BACKUP_EXCLUDE_AUTH=1)"
-  else
-    copy_if_exists "$PI_ROOT/agent/auth.json"             "$BACKUP_DIR/auth.json"
-    if [[ -f "$BACKUP_DIR/auth.json" ]]; then
-      chmod 600 "$BACKUP_DIR/auth.json"
-      warn "  auth.json holds your API credentials and is included in this backup."
-      warn "  Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out."
-    fi
-  fi
-  copy_if_exists "$PI_ROOT/agent/models.json"             "$BACKUP_DIR/models.json"
-  copy_if_exists "$PI_ROOT/agent/trust.json"              "$BACKUP_DIR/trust.json"
-  copy_if_exists "$PI_ROOT/agent/keybindings.json"        "$BACKUP_DIR/keybindings.json"
-  copy_if_exists "$PI_ROOT/agent/pix.json"                "$BACKUP_DIR/pix.json"
-  copy_if_exists "$PI_ROOT/agent/optimizer.json"          "$BACKUP_DIR/optimizer.json"
-  copy_if_exists "$PI_ROOT/agent/lmstudio.json.bak"       "$BACKUP_DIR/lmstudio.json.bak"
-  copy_if_exists "$PI_ROOT/agent/hermes-memory-config.json" "$BACKUP_DIR/hermes-memory-config.json"
-  copy_if_exists "$PI_ROOT/agent/pi.code-workspace"       "$BACKUP_DIR/pi.code-workspace"
-
-  # ── 2. Extension Configs ──────────────────────────────────────
-  log "2/8  Extension configurations..."
-  copy_if_exists "$PI_ROOT/agent/pi-hermes-memory-cleanup/scoped-memory.json" \
-    "$BACKUP_DIR/pi-hermes-memory-cleanup/scoped-memory.json"
-  copy_if_exists "$PI_ROOT/agent/loop-police.json"        "$BACKUP_DIR/loop-police.json"
-  copy_if_exists "$PI_ROOT/agent/pi-rtk/config.json"      "$BACKUP_DIR/pi-rtk/config.json"
-  copy_if_exists "$PI_ROOT/agent/context-mode/config.json" "$BACKUP_DIR/context-mode/config.json"
-  copy_if_exists "$PI_ROOT/agent/pi-timeout/config.json"  "$BACKUP_DIR/pi-timeout/config.json"
-  copy_if_exists "$PI_ROOT/agent/pi-context-viewer/config.json" "$BACKUP_DIR/pi-context-viewer/config.json"
-  copy_if_exists "$PI_ROOT/agent/pix-optimizer/config.json" "$BACKUP_DIR/pix-optimizer/config.json"
-  copy_if_exists "$PI_ROOT/agent/pi-nvidia-nim/config.json" "$BACKUP_DIR/pi-nvidia-nim/config.json"
-
-  # ── 3. Global Skills ──────────────────────────────────────────
-  log "3/8  Global skills..."
-  copy_dir_if_exists "$PI_ROOT/agent/skills"              "$BACKUP_DIR/skills"
-
-  # ── 4. Project Skills & Memory ────────────────────────────────
-  log "4/8  Project skills & memory..."
-  if [[ -d "$PI_ROOT/agent/projects-memory" ]]; then
-    mkdir -p "$BACKUP_DIR/projects-memory"
-    for proj in "$PI_ROOT/agent/projects-memory"/*/; do
-      [[ -d "$proj" ]] || continue
-      name="$(basename "$proj")"
-      copy_dir_if_exists "$proj" "$BACKUP_DIR/projects-memory/$name"
-    done
-    ok "  projects-memory/ ($(ls -1 "$BACKUP_DIR/projects-memory" 2>/dev/null | wc -l) projects)"
-  else
-    warn "  projects-memory/ — not found"
-  fi
-
-  # ── 5. Local Extensions (source code only, no node_modules) ────
-  log "5/8  Local extension source code..."
-  local_exts=(
-    "pi-timeout"
-    "pi-chunk"
-    "pi-hermes-memory-cleanup"
-    "pi-context-docs"
-  )
-  for ext in "${local_exts[@]}"; do
-    if [[ -d "$LOCAL_EXT_ROOT/$ext" ]]; then
-      mkdir -p "$BACKUP_DIR/local-extensions/$ext"
-      # Copy source, exclude node_modules, dist, build, .git, coverage
-      rsync -a --exclude 'node_modules' --exclude 'dist' --exclude 'build' --exclude '.git' --exclude 'coverage' --exclude '*.log' \
-        "$LOCAL_EXT_ROOT/$ext/" "$BACKUP_DIR/local-extensions/$ext/"
-      ok "  $ext/ (source only)"
-    else
-      warn "  $ext — not found at $LOCAL_EXT_ROOT/$ext"
-    fi
-  done
-
-  # ── 6. Installed npm Extensions (package.json + lock) ─────────
-  log "6/8  npm extension manifests..."
-  if [[ -d "$PI_ROOT/agent/npm" ]]; then
-    # Only copy package.json and lockfiles, not node_modules
-    find "$PI_ROOT/agent/npm" -maxdepth 3 -type f \( -name "package.json" -o -name "package-lock.json" -o -name "npm-shrinkwrap.json" -o -name "pnpm-lock.yaml" \) | while read -r f; do
-      rel="${f#$PI_ROOT/agent/npm/}"
-      mkdir -p "$BACKUP_DIR/npm-manifests/$(dirname "$rel")"
-      cp "$f" "$BACKUP_DIR/npm-manifests/$rel"
-    done
-    ok "  npm manifests (package.json, lockfiles)"
-  else
-    warn "  npm/ — not found"
-  fi
-
-  # ── 7. Hermes Memory (active files only, not sessions DB) ─────
-  log "7/8  Hermes memory (active files)..."
-  if [[ -d "$PI_ROOT/agent/pi-hermes-memory" ]]; then
-    mkdir -p "$BACKUP_DIR/pi-hermes-memory"
-    for f in MEMORY.md USER.md failures.md; do
-      copy_if_exists "$PI_ROOT/agent/pi-hermes-memory/$f" "$BACKUP_DIR/pi-hermes-memory/$f"
-    done
-    # Also backup retired/archived if they exist
-    for f in retired-failures.md retired-memory.md; do
-      copy_if_exists "$PI_ROOT/agent/pi-hermes-memory/$f" "$BACKUP_DIR/pi-hermes-memory/$f"
-    done
-  else
-    warn "  pi-hermes-memory/ — not found"
-  fi
-
-  # ── 8. Cleanup Backups (recent) ───────────────────────────────
-  log "8/8  Recent hermes-cleanup backups (last 5)..."
-  if [[ -d "$PI_ROOT/agent/hermes-cleanup" ]]; then
-    mkdir -p "$BACKUP_DIR/hermes-cleanup"
-    find "$PI_ROOT/agent/hermes-cleanup" -maxdepth 1 -type d -name "20*" | sort -r | head -5 | while read -r d; do
-      copy_dir_if_exists "$d" "$BACKUP_DIR/hermes-cleanup/$(basename "$d")"
-    done
-  else
-    warn "  hermes-cleanup/ — not found"
-  fi
+  backup_manifest_entries
 
   # ── Manifest ──────────────────────────────────────────────────
   log "Creating manifest..."
