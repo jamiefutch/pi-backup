@@ -44,6 +44,29 @@ t_compress_failure() {
   assert_contains "$out" "stub 7z failure" "failure output shows the real error or tool output"
 }
 
+# Compression failure is an error, keeps the intact staging dir, leaves no partial archive.
+t_compress_failure_keeps_staging() {
+  make_fixture
+  stub_7z_fail
+  KEEP_UNCOMPRESSED=0 run_script "$1" backup-pi >/dev/null 2>&1
+  assert_nonzero "$?" "exit status after compression failure"
+  assert_eq "$(count_glob "$BACKUP_ROOT/pi-backup-*.*")" 0 "partial archives"
+  assert_eq "$(count_glob "$BACKUP_ROOT/pi-backup-*")" 1 "staging dirs kept"
+}
+
+# A half-built staging dir is removed when the backup fails part-way.
+t_failure_removes_staging() {
+  [[ "$(id -u)" == 0 ]] && return 0
+  [[ "$(uname)" == MINGW* || "$(uname)" == MSYS* ]] && return 0
+  make_fixture
+  chmod 000 "$PI_ROOT/agent/skills"
+  KEEP_UNCOMPRESSED=1 run_script "$1" backup-pi >/dev/null 2>&1
+  local rc=$?
+  chmod 755 "$PI_ROOT/agent/skills"
+  assert_nonzero "$rc" "backup with unreadable skills dir"
+  assert_eq "$(count_glob "$BACKUP_ROOT/pi-backup-*")" 0 "half-built staging dirs"
+}
+
 # Bug 5: credentials.
 t_exclude_auth() {
   make_fixture
@@ -80,6 +103,8 @@ run_test "internal backup: one dir, no archive"   t_internal_shape
 run_test "external backup: one archive"           t_external_shape
 run_test "internal backup works without zip"      t_internal_no_zip
 run_test "compression failure message"            t_compress_failure
+run_test "compression failure keeps staging, no partial archive" t_compress_failure_keeps_staging
+run_test "failed backup removes half-built staging" t_failure_removes_staging
 run_test "EXCLUDE_AUTH omits auth.json"           t_exclude_auth
 run_test "auth.json mode 600 and warning"         t_auth_mode_and_warning
 run_test "archive has single top-level dir"       t_archive_layout

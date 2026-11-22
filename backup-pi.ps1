@@ -60,19 +60,27 @@ function Copy-Tree([string]$src, [string]$dst, [string[]]$excludeDirs = @(), [st
         $robocopyArgs += @('/NFL','/NDL','/NJH','/NJS')
         & robocopy @robocopyArgs | Out-Null
     } else {
-        # Fallback: manual recursive copy with exclusions
-        Get-ChildItem -LiteralPath $src | ForEach-Object {
+        # Fallback without robocopy: recurse so existing destination dirs are merged, not nested.
+        Get-ChildItem -LiteralPath $src -Force | ForEach-Object {
             $item = $_
             $skip = $false
             if ($item.PSIsContainer -and $item.Name -in $excludeDirs) { $skip = $true }
             if (-not $item.PSIsContainer -and ($excludeFiles | Where-Object { $item.Name -like $_ })) { $skip = $true }
             if (-not $skip) {
-                Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $dst $item.Name) -Recurse -Force
+                $target = Join-Path $dst $item.Name
+                if ($item.PSIsContainer) { Copy-Tree $item.FullName $target $excludeDirs $excludeFiles }
+                else { Copy-Item -LiteralPath $item.FullName -Destination $target -Force }
             }
         }
     }
 }
 
+# A half-built staging dir (or partial archive) is removed if the script fails.
+# A successful run, or a failed compression (staging is intact), keeps it.
+$Completed = $false
+$KeepStagingOnFail = $false
+$archivePath = $null
+try {
 New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null
 
 Write-Host ""
@@ -202,8 +210,7 @@ $relFiles = Get-ChildItem -LiteralPath $ArchiveDir -Recurse -File | ForEach-Obje
 $manifest += ($relFiles -join "`n") + "`n"
 Set-Content -LiteralPath (Join-Path $ArchiveDir 'MANIFEST.txt') -Value $manifest -Encoding UTF8
 
-# ── 9. Compress ───────────────────────────────────────────
-$archivePath = $null
+# ── 9. Compress (external backups only) ───────────────────
 if ($KeepUncompressed) {
     Log "9/9  Skipping compression for internal backup"
 } else {
@@ -211,23 +218,29 @@ if ($KeepUncompressed) {
     $archivePath = Join-Path $BackupRoot ($ArchiveBase + ".$ArchiveExtension")
     try {
         if ($SevenZip) {
-            & $SevenZip.Source a -t7z -mx=9 $archivePath $ArchiveDir | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "7zip exited with code $LASTEXITCODE" }
+            # Run from $BackupRoot with relative names so the archive has a single
+            # top-level pi-backup-*/ entry (same layout as the bash script).
+            Push-Location -LiteralPath $BackupRoot
+            try {
+                $sevenOut = & $SevenZip.Source a -t7z -mx=9 "$ArchiveBase.7z" $ArchiveBase 2>&1
+                $sevenRc = $LASTEXITCODE
+            } finally {
+                Pop-Location
+            }
+            if ($sevenRc -ne 0) { throw "7zip exited with code ${sevenRc}: $(($sevenOut | Out-String).Trim())" }
         } else {
             Compress-Archive -LiteralPath $ArchiveDir -DestinationPath $archivePath -CompressionLevel Optimal -Force
         }
         OK "  $archivePath"
     } catch {
-        Warn "  Compress-Archive failed: $_.Exception.Message"
+        Warn "  Compression ($ArchiveExtension) failed: $($_.Exception.Message)"
         Warn "  Keeping uncompressed staging dir: $ArchiveDir"
+        if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue }
         $archivePath = $null
+        $KeepStagingOnFail = $true
+        exit 1
     }
-}
-
-# ── 10. Clean up staging dir (unless told to keep it) ─────
-if ($KeepUncompressed) {
-    Log "Keeping uncompressed staging dir: $ArchiveDir"
-} elseif ($archivePath) {
+    # ── 10. Clean up staging dir ──────────────────────────
     Remove-Item -LiteralPath $ArchiveDir -Recurse -Force
 }
 
@@ -235,12 +248,22 @@ if ($KeepUncompressed) {
 Write-Host ""
 Log "================================================================"
 OK "Backup complete!"
-if ($archivePath) {
+if ($KeepUncompressed) {
+    $result = $ArchiveDir
+    Log "Staging:  $ArchiveDir"
+} else {
+    $result = $archivePath
     Log "Archive:  $archivePath"
     Log "Size:     $([math]::Round((Get-Item -LiteralPath $archivePath).Length / 1MB, 1)) MB"
 }
-if ($KeepUncompressed) { Log "Staging:  $ArchiveDir" }
 Write-Host ""
 Log "To restore after reinstall:"
-Log "  .\restore-pi.ps1 $archivePath"
+Log "  .\restore-pi.ps1 $result"
 Write-Host ""
+$Completed = $true
+} finally {
+    if (-not $Completed -and -not $KeepStagingOnFail) {
+        if (Test-Path -LiteralPath $ArchiveDir) { Remove-Item -LiteralPath $ArchiveDir -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($archivePath -and (Test-Path -LiteralPath $archivePath)) { Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue }
+    }
+}

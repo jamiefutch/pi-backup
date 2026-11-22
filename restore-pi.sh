@@ -20,6 +20,19 @@ ok()    { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERR]${NC}  $*"; }
 
+# ─── Cleanup ─────────────────────────────────────────────────────
+# Registered before any temp dir is created, so every exit path (abort, error,
+# success) removes the extraction dir.
+STAGE=""
+cleanup() {
+  local rc=$?
+  if [[ -n "$STAGE" && -d "$STAGE" ]]; then
+    rm -rf "$STAGE"
+  fi
+  return $rc
+}
+trap cleanup EXIT
+
 # ─── Usage ───────────────────────────────────────────────────────
 usage() {
   cat <<EOF
@@ -38,6 +51,9 @@ zip/7z archive (as produced by backup-pi.sh).
 Prerequisites:
   - Fresh Pi install completed (pi --version works)
   - Pi NOT running
+
+Environment:
+  PI_BACKUP_ASSUME_YES=1   Skip the confirmation prompt (for scripted use)
 EOF
   exit 1
 }
@@ -56,10 +72,10 @@ BACKUP_ARG="$1"
 if [[ -d "$BACKUP_ARG" ]]; then
   # Uncompressed directory backup
   BACKUP_DIR="$BACKUP_ARG"
-  STAGE=""
 elif [[ -f "$BACKUP_ARG" && "$BACKUP_ARG" =~ \.(zip|7z)$ ]]; then
   # Compressed archive: extract to a temp dir first
-  STAGE="$(mktemp -d)"
+  # Explicit template: BSD mktemp ignores $TMPDIR when called without one.
+  STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pi-restore.XXXXXX")"
   log "Extracting archive: $BACKUP_ARG"
   tool="$(pick_extract_tool)"
   if [[ -n "$tool" ]]; then
@@ -71,7 +87,7 @@ elif [[ -f "$BACKUP_ARG" && "$BACKUP_ARG" =~ \.(zip|7z)$ ]]; then
   fi
   # The archive holds one top-level pi-backup-* dir
   BACKUP_DIR="$(find "$STAGE" -mindepth 1 -maxdepth 1 -type d | head -1)"
-  [[ -n "$BACKUP_DIR" ]] || { err "No backup directory found inside archive."; rm -rf "$STAGE"; exit 1; }
+  [[ -n "$BACKUP_DIR" ]] || { err "No backup directory found inside archive."; exit 1; }
   log "Extracted to: $BACKUP_DIR"
 else
   err "Backup not found: $BACKUP_ARG (need a directory, .zip, or .7z)"
@@ -88,10 +104,27 @@ warn "This will OVERWRITE all current Pi configuration."
 warn "Backup source: $BACKUP_DIR"
 warn "Target:        $PI_ROOT"
 warn "Pi must NOT be running."
+
+# Best-effort running-Pi check. It only warns: process names are unreliable.
+if command -v pgrep >/dev/null 2>&1 && { pgrep -x pi >/dev/null 2>&1 || pgrep -f 'pi-coding-agent' >/dev/null 2>&1; }; then
+  warn "A Pi process appears to be running. Exit Pi first: files restored under a"
+  warn "running Pi can be overwritten or corrupted when it exits."
+fi
 echo
-read -rp "Continue? [y/N] " -n 1
-echo
-[[ $REPLY =~ ^[Yy]$ ]] || { log "Aborted."; exit 0; }
+
+if [[ "${PI_BACKUP_ASSUME_YES:-0}" == "1" ]]; then
+  log "PI_BACKUP_ASSUME_YES=1 set; skipping confirmation."
+else
+  REPLY=""
+  if ! read -rp "Continue? [y/N] " -n 1 REPLY; then
+    echo
+    err "Cannot read a confirmation (stdin is not interactive)."
+    err "Run this in a terminal, or set PI_BACKUP_ASSUME_YES=1 to skip the prompt."
+    exit 1
+  fi
+  echo
+  [[ $REPLY =~ ^[Yy]$ ]] || { log "Aborted."; exit 0; }
+fi
 
 # ─── Helpers ─────────────────────────────────────────────────────
 restore_file() {
@@ -232,9 +265,3 @@ main() {
 }
 
 main "$@"
-
-# ─── Cleanup ────────────────────────────────────────────────────
-if [[ -n "${STAGE:-}" && -d "$STAGE" ]]; then
-  rm -rf "$STAGE"
-  log "Removed temp extraction dir."
-fi

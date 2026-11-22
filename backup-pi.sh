@@ -14,24 +14,46 @@ BACKUP_DIR="$BACKUP_ROOT/pi-backup-$TIMESTAMP"   # staging dir (compressed into 
 KEEP_UNCOMPRESSED="${KEEP_UNCOMPRESSED:-0}"  # set to 1 to keep the staging dir after archiving
 
 # ─── Compression tool detection ────────────────────────────────
+# Only needed for compressed (external) backups. Internal backups
+# (KEEP_UNCOMPRESSED=1) are plain staging directories and need no tool.
 # Prefer 7zip (best ratio) if present, fall back to zip.
 ZIP_EXT="zip"
 ZIP_TOOL=""
-if command -v 7zz >/dev/null 2>&1; then
-  ZIP_TOOL="7zz"
-  ZIP_EXT="7z"
-elif command -v 7z >/dev/null 2>&1; then
-  ZIP_TOOL="7z"
-  ZIP_EXT="7z"
-elif command -v 7za >/dev/null 2>&1; then
-  ZIP_TOOL="7za"
-  ZIP_EXT="7z"
-elif command -v zip >/dev/null 2>&1; then
-  ZIP_TOOL="zip"
-  ZIP_EXT="zip"
+ARCHIVE=""
+if [[ "$KEEP_UNCOMPRESSED" != "1" ]]; then
+  if command -v 7zz >/dev/null 2>&1; then
+    ZIP_TOOL="7zz"
+    ZIP_EXT="7z"
+  elif command -v 7z >/dev/null 2>&1; then
+    ZIP_TOOL="7z"
+    ZIP_EXT="7z"
+  elif command -v 7za >/dev/null 2>&1; then
+    ZIP_TOOL="7za"
+    ZIP_EXT="7z"
+  elif command -v zip >/dev/null 2>&1; then
+    ZIP_TOOL="zip"
+    ZIP_EXT="zip"
+  fi
+  [[ -n "$ZIP_TOOL" ]] || { echo "[ERR] Neither 7zip nor zip found. Install one for compressed backups." >&2; exit 1; }
+  ARCHIVE="$BACKUP_ROOT/pi-backup-$TIMESTAMP.$ZIP_EXT"
 fi
-[[ -n "$ZIP_TOOL" ]] || { echo "[ERR] Neither 7zip nor zip found. Install one for compressed backups." >&2; exit 1; }
-ARCHIVE="$BACKUP_ROOT/pi-backup-$TIMESTAMP.$ZIP_EXT"
+
+# ─── Cleanup on failure ───────────────────────────────────────
+# A half-built staging dir (or partial archive) is removed if the script fails.
+# A successful run, or a failed compression (staging is intact), keeps it.
+STAGING_CREATED=0
+KEEP_STAGING_ON_FAIL=0
+cleanup() {
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ "$STAGING_CREATED" == "1" && "$KEEP_STAGING_ON_FAIL" != "1" ]]; then
+      rm -rf "$BACKUP_DIR"
+    fi
+    [[ -n "$ARCHIVE" ]] && rm -f "$ARCHIVE"
+  fi
+  return $rc
+}
+trap cleanup EXIT
 
 # ─── Colors ──────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -79,6 +101,7 @@ main() {
   echo
 
   mkdir -p "$BACKUP_DIR"
+  STAGING_CREATED=1
 
   # ── 1. Core Config Files ──────────────────────────────────────
   log "1/8  Core configuration files..."
@@ -198,20 +221,26 @@ Contents:
 EOF
   find "$BACKUP_DIR" -type f | sed "s|$BACKUP_DIR/||" | sort >> "$BACKUP_DIR/MANIFEST.txt"
 
-  # ── 9. Compress ───────────────────────────────────────────────
-  log "9/9  Compressing backup ($ZIP_TOOL)..."
-  local name="$(basename "$BACKUP_DIR")"
-  if [[ "$ZIP_TOOL" == "zip" ]]; then
-    (cd "$BACKUP_ROOT" && zip -rq "$(basename "$ARCHIVE")" "$name")
-  else
-    (cd "$BACKUP_ROOT" && "$ZIP_TOOL" a -t7z -mx=9 "$(basename "$ARCHIVE")" "$name" >/dev/null)
-  fi
-  ok "  $ARCHIVE"
-
-  # ── 10. Clean up staging dir (unless told to keep it) ─────────
+  # ── 9. Compress (external backups only) ───────────────────────
   if [[ "$KEEP_UNCOMPRESSED" == "1" ]]; then
-    log "Keeping uncompressed staging dir: $BACKUP_DIR"
+    log "9/9  Skipping compression for internal backup"
   else
+    log "9/9  Compressing backup ($ZIP_TOOL)..."
+    local name comp_out comp_rc=0
+    name="$(basename "$BACKUP_DIR")"
+    if [[ "$ZIP_TOOL" == "zip" ]]; then
+      comp_out="$(cd "$BACKUP_ROOT" && zip -rq "$(basename "$ARCHIVE")" "$name" 2>&1)" || comp_rc=$?
+    else
+      comp_out="$(cd "$BACKUP_ROOT" && "$ZIP_TOOL" a -t7z -mx=9 "$(basename "$ARCHIVE")" "$name" 2>&1)" || comp_rc=$?
+    fi
+    if [[ $comp_rc -ne 0 ]]; then
+      warn "  Compression with $ZIP_TOOL failed (exit $comp_rc): $comp_out"
+      warn "  Keeping uncompressed staging dir: $BACKUP_DIR"
+      KEEP_STAGING_ON_FAIL=1
+      exit 1
+    fi
+    ok "  $ARCHIVE"
+    # ── 10. Clean up staging dir ────────────────────────────────
     rm -rf "$BACKUP_DIR"
   fi
 
@@ -219,12 +248,19 @@ EOF
   echo
   log "════════════════════════════════════════════════════════════"
   ok "Backup complete!"
-  log "Archive:  $ARCHIVE"
-  log "Size:     $(du -h "$ARCHIVE" | cut -f1)"
-  [[ "$KEEP_UNCOMPRESSED" == "1" ]] && log "Staging:  $BACKUP_DIR"
+  local result
+  if [[ "$KEEP_UNCOMPRESSED" == "1" ]]; then
+    result="$BACKUP_DIR"
+    log "Staging:  $BACKUP_DIR"
+    log "Size:     $(du -sh "$BACKUP_DIR" | cut -f1)"
+  else
+    result="$ARCHIVE"
+    log "Archive:  $ARCHIVE"
+    log "Size:     $(du -h "$ARCHIVE" | cut -f1)"
+  fi
   echo
   log "To restore after reinstall:"
-  log "  ./restore-pi.sh $ARCHIVE"
+  log "  ./restore-pi.sh $result"
   echo
 }
 

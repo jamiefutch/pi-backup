@@ -46,8 +46,30 @@ Prerequisites:
 
 if (-not $BackupArg) { Show-Usage }
 
-# ─── Archive handling ─────────────────────────────────────
+function Test-PiRunning {
+    # Best-effort only: process names are unreliable, so callers warn rather than block.
+    if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+        if (Get-Process -Name 'pi' -ErrorAction SilentlyContinue) { return $true }
+        try {
+            $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='bun.exe'" -ErrorAction Stop
+            if ($procs | Where-Object { $_.CommandLine -like '*pi-coding-agent*' }) { return $true }
+        } catch {}
+        return $false
+    }
+    if (Get-Command pgrep -ErrorAction SilentlyContinue) {
+        & pgrep -x pi *> $null
+        if ($LASTEXITCODE -eq 0) { return $true }
+        & pgrep -f 'pi-coding-agent' *> $null
+        return ($LASTEXITCODE -eq 0)
+    }
+    return $false
+}
+
+# The extraction dir is removed in `finally`, so every exit path (abort, error,
+# success) cleans up. `exit` inside `try` still runs `finally`.
 $STAGE = $null
+try {
+# ─── Archive handling ─────────────────────────────────────
 $BackupDir = $null
 $SevenZip = @('7zz', '7z', '7za') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
 
@@ -65,7 +87,7 @@ if (Test-Path -LiteralPath $BackupArg -PathType Container) {
         Err "7zip is required to extract .7z backups. Install 7-Zip and ensure it is on PATH."
         exit 1
     }
-    $STAGE = Join-Path $env:TEMP ("pi-restore-" + [guid]::NewGuid().ToString('N'))
+    $STAGE = Join-Path ([System.IO.Path]::GetTempPath()) ("pi-restore-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $STAGE -Force | Out-Null
     Log "Extracting archive: $BackupArg"
     try {
@@ -77,12 +99,11 @@ if (Test-Path -LiteralPath $BackupArg -PathType Container) {
         }
     } catch {
         Err "Failed to extract archive: $($_.Exception.Message)"
-        Remove-Item -LiteralPath $STAGE -Recurse -Force -ErrorAction SilentlyContinue
         exit 1
     }
     # The archive holds one top-level pi-backup-* dir
     $top = Get-ChildItem -LiteralPath $STAGE -Directory | Select-Object -First 1
-    if (-not $top) { Err "No backup directory found inside archive."; Remove-Item $STAGE -Recurse -Force; exit 1 }
+    if (-not $top) { Err "No backup directory found inside archive."; exit 1 }
     $BackupDir = $top.FullName
     Log "Extracted to: $BackupDir"
 } else {
@@ -104,9 +125,23 @@ Warn "This will OVERWRITE all current Pi configuration."
 Warn "Backup source: $BackupDir"
 Warn "Target:        $PiRoot"
 Warn "Pi must NOT be running."
+if (Test-PiRunning) {
+    Warn "A Pi process appears to be running. Exit Pi first: files restored under a"
+    Warn "running Pi can be overwritten or corrupted when it exits."
+}
 Write-Host ""
-$confirm = Read-Host "Continue? [y/N] "
-if ($confirm -notmatch '^[Yy]$') { Log "Aborted."; if ($STAGE) { Remove-Item $STAGE -Recurse -Force }; exit 0 }
+if ($env:PI_BACKUP_ASSUME_YES -eq '1') {
+    Log "PI_BACKUP_ASSUME_YES=1 set; skipping confirmation."
+} else {
+    $confirm = $null
+    try { $confirm = Read-Host "Continue? [y/N] " } catch { $confirm = $null }
+    if ($null -eq $confirm) {
+        Err "Cannot read a confirmation (stdin is not interactive)."
+        Err "Run this in a terminal, or set PI_BACKUP_ASSUME_YES=1 to skip the prompt."
+        exit 1
+    }
+    if ($confirm -notmatch '^[Yy]$') { Log "Aborted."; exit 0 }
+}
 
 # ─── Helpers ──────────────────────────────────────────────
 function Restore-File([string]$src, [string]$dst) {
@@ -141,12 +176,17 @@ function Copy-Tree([string]$src, [string]$dst, [string[]]$excludeDirs = @(), [st
         $robocopyArgs += @('/NFL','/NDL','/NJH','/NJS')
         & robocopy @robocopyArgs | Out-Null
     } else {
-        Get-ChildItem -LiteralPath $src | ForEach-Object {
+        # Fallback without robocopy: recurse so existing destination dirs are merged,
+        # not nested (Copy-Item of a dir onto an existing dir would create dst/dir/dir).
+        Get-ChildItem -LiteralPath $src -Force | ForEach-Object {
+            $item = $_
             $skip = $false
-            if ($_.PSIsContainer -and $_.Name -in $excludeDirs) { $skip = $true }
-            if (-not $_.PSIsContainer -and $_.Name -like $excludeFiles) { $skip = $true }
+            if ($item.PSIsContainer -and $item.Name -in $excludeDirs) { $skip = $true }
+            if (-not $item.PSIsContainer -and ($excludeFiles | Where-Object { $item.Name -like $_ })) { $skip = $true }
             if (-not $skip) {
-                Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dst $_.Name) -Recurse -Force
+                $target = Join-Path $dst $item.Name
+                if ($item.PSIsContainer) { Copy-Tree $item.FullName $target $excludeDirs $excludeFiles }
+                else { Copy-Item -LiteralPath $item.FullName -Destination $target -Force }
             }
         }
     }
@@ -264,8 +304,8 @@ Log "     /scoped-memory-status"
 Log "  3. Restart Pi and verify everything works"
 Write-Host ""
 
-# ─── Cleanup ──────────────────────────────────────────────
-if ($STAGE -and (Test-Path -LiteralPath $STAGE)) {
-    Remove-Item -LiteralPath $STAGE -Recurse -Force
-    Log "Removed temp extraction dir."
+} finally {
+    if ($STAGE -and (Test-Path -LiteralPath $STAGE)) {
+        Remove-Item -LiteralPath $STAGE -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
