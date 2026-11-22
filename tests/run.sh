@@ -7,6 +7,10 @@ for t in tests/sh/*.test.sh; do
   echo "== $t"
   bash "$t" || rc=1
 done
+if command -v pwsh >/dev/null 2>&1; then
+  echo "== tests/ps1/archive-layout.ps1"
+  pwsh -NoProfile -File tests/ps1/archive-layout.ps1 || rc=1
+fi
 if ls tests/ts/*.test.mjs >/dev/null 2>&1; then
   echo "== node tests"
   for t in tests/ts/*.test.mjs; do

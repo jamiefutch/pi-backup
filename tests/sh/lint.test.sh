@@ -10,7 +10,7 @@ t_bash_syntax() {
 t_pwsh_parse() {
   [[ "$HAVE_PWSH" == 1 ]] || { echo "    (skip: no pwsh)"; return 0; }
   local f out
-  for f in backup-pi.ps1 restore-pi.ps1 pi-clean-reinstall.ps1; do
+  for f in backup-pi.ps1 restore-pi.ps1 pi-clean-reinstall.ps1 tests/ps1/archive-layout.ps1; do
     out="$(PI_LINT_FILE="$REPO_ROOT/$f" pwsh -NoProfile -Command '$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile($env:PI_LINT_FILE,[ref]$t,[ref]$e)|Out-Null; if($e.Count){$e|%{$_.Message};exit 1}' 2>&1)"
     assert_status "$?" 0 "pwsh parse $f: $out"
   done

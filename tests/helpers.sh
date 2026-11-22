@@ -135,7 +135,10 @@ assert_no_temp_leak() {
 
 # A stub 7z that always fails.
 stub_7z_fail() {
-  printf '#!/bin/sh\necho "stub 7z failure" >&2\nexit 1\n' > "$STUB_BIN/7z"; chmod +x "$STUB_BIN/7z"
+  local n
+  for n in 7zz 7z 7za; do   # the scripts prefer 7zz, then 7z, then 7za
+    printf '#!/bin/sh\necho "stub 7z failure" >&2\nexit 1\n' > "$STUB_BIN/$n"; chmod +x "$STUB_BIN/$n"
+  done
 }
 
 # ── Assertions ─────────────────────────────────────────────────

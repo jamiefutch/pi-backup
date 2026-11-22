@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `dist/` is never published (Pi loads the .ts directly); this is only a compile check.
+      - name: Build (compile check)
+        run: npm run build
+
+      - name: Shell syntax check
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash -n backup-pi.sh restore-pi.sh pi-clean-reinstall.sh
+
+      - name: PowerShell parse check
+        shell: pwsh
+        run: |
+          $files = "backup-pi.ps1","restore-pi.ps1","pi-clean-reinstall.ps1","tests/ps1/archive-layout.ps1"
+          foreach ($f in $files) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $f), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; throw "$f has parse errors" }
+          }
+
+      # Exercise the .7z code paths on the runners that do not ship 7-Zip.
+      - name: Install 7-Zip (Linux)
+        if: runner.os == 'Linux'
+        run: command -v 7z || sudo apt-get install -y p7zip-full
+
+      - name: Install 7-Zip (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sevenzip
+
+      # Bash + pwsh script tests and the extension tests (macOS/Linux).
+      - name: Test suite
+        if: runner.os != 'Windows'
+        shell: bash
+        run: npm test
+
+      # Windows: run the extension tests and the native 7z archive-layout test (bug 7).
+      # The bash script tests need a POSIX userland and are covered on Linux and macOS.
+      - name: Extension tests (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          for t in tests/ts/*.test.mjs; do
+            node --experimental-strip-types --no-warnings --test "$t"
+          done
+
+      - name: 7z archive layout test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/ps1/archive-layout.ps1

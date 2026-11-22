@@ -216,7 +216,8 @@ foreach ($e in $entries) {
 
 # ── Manifest ──────────────────────────────────────────────
 Log "Creating manifest..."
-$piVersion = (& pi --version 2>$null) -join ''
+$piVersion = ''
+try { $piVersion = (& pi --version 2>$null) -join '' } catch { $piVersion = '' }
 if (-not $piVersion) { $piVersion = 'unknown' }
 $manifest = @"
 Pi Complete Backup Manifest
