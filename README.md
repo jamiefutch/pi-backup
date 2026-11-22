@@ -125,8 +125,8 @@ Backup: pi-backup-20260812-112019.7z
 
 | Action | Description |
 |--------|-------------|
-| **🔄 Restore** | Runs the platform restore script — overwrites all Pi config (requires confirmation) |
-| **📋 Copy to internal** | Copies external backup to `~/.pi/backups/` for quick access (external only) |
+| **🔄 Restore** | After confirmation, shows (and copies, where possible) the exact restore command to run **after you exit Pi**. The TUI never restores in-process, because the running Pi owns the files being replaced |
+| **📋 Copy to internal** | Extracts/copies an external backup into `~/.pi/backups/` as an uncompressed directory (external only) |
 | **📄 View manifest** | Opens `MANIFEST.txt` in editor (extracts from compressed archives) |
 | **🗑️ Delete** | Permanently removes backup (requires confirmation) |
 
@@ -276,6 +276,8 @@ Use the **⚙️ Configure external backup directory** option in `/pi-backup` to
 
 - **📝 Change directory** — prompt to type a path, saved to `settings.json`
 - **🔄 Reset to default** — removes the `settings.json` value, falls back to env var / default
+
+If `settings.json` is corrupt (not valid JSON), the manager never overwrites it: read-only screens fall back to the default directory with one warning, and changes are refused with an error. Successful saves are written atomically and keep the previous file as `settings.json.bak-<timestamp>` (last 3 kept).
 
 ### When the prompt appears
 

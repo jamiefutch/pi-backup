@@ -1,8 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execFileSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, rmSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, rmSync, cpSync, renameSync, copyFileSync } from "node:fs";
+
+const execFileAsync = promisify(execFile);
+const MAX_BUFFER = 50 * 1024 * 1024;
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || "";
 const IS_WINDOWS = process.platform === "win32";
@@ -22,18 +26,73 @@ interface BackupInfo {
 	location: "internal" | "external";
 }
 
-function readSettings(): any {
-	try {
-		if (existsSync(SETTINGS_FILE)) {
-			return JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
-		}
-	} catch {}
-	return {};
+interface SettingsResult {
+	ok: boolean;
+	data: Record<string, any>;
+	error?: string;
 }
 
-function writeSettings(settings: any): void {
-	mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-	writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+/** A missing file is fine ({}). A file that exists but cannot be parsed is NOT ok. */
+function readSettings(): SettingsResult {
+	if (!existsSync(SETTINGS_FILE)) return { ok: true, data: {} };
+	try {
+		const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return { ok: false, data: {}, error: "settings.json is not a JSON object" };
+		}
+		return { ok: true, data: parsed };
+	} catch (e: any) {
+		return { ok: false, data: {}, error: `settings.json could not be parsed (${e.message})` };
+	}
+}
+
+const SETTINGS_BACKUPS_KEPT = 3;
+
+/**
+ * Read-modify-write settings.json safely: refuses if the current file is corrupt, writes to a temp
+ * file and renames it into place, and keeps the previous version as settings.json.bak-<timestamp>.
+ */
+function updateSettings(mutate: (settings: Record<string, any>) => void): { ok: boolean; error?: string } {
+	const current = readSettings();
+	if (!current.ok) {
+		return { ok: false, error: `${current.error}. Left untouched; fix or remove ${SETTINGS_FILE} and try again.` };
+	}
+	mutate(current.data);
+	const dir = dirname(SETTINGS_FILE);
+	const tmp = `${SETTINGS_FILE}.tmp-${process.pid}-${Date.now()}`;
+	try {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(tmp, JSON.stringify(current.data, null, 2), "utf-8");
+		if (existsSync(SETTINGS_FILE)) {
+			const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+			copyFileSync(SETTINGS_FILE, `${SETTINGS_FILE}.bak-${stamp}`);
+			const old = readdirSync(dir).filter((f) => f.startsWith("settings.json.bak-")).sort();
+			for (const f of old.slice(0, Math.max(0, old.length - SETTINGS_BACKUPS_KEPT))) {
+				rmSync(join(dir, f), { force: true });
+			}
+		}
+		renameSync(tmp, SETTINGS_FILE);
+		return { ok: true };
+	} catch (e: any) {
+		rmSync(tmp, { force: true });
+		return { ok: false, error: e.message };
+	}
+}
+
+let corruptSettingsWarned = false;
+
+/** Read-only callers fall back to defaults and surface a single warning. */
+function readSettingsForDisplay(ctx?: any): Record<string, any> {
+	const result = readSettings();
+	if (result.ok) {
+		corruptSettingsWarned = false;
+		return result.data;
+	}
+	if (!corruptSettingsWarned) {
+		corruptSettingsWarned = true;
+		ctx?.ui?.notify?.(`${result.error}. Using default settings; ${SETTINGS_FILE} was not modified.`, "warning");
+	}
+	return {};
 }
 
 function getExternalBackupDir(ctx?: any): string {
@@ -43,7 +102,7 @@ function getExternalBackupDir(ctx?: any): string {
 	}
 
 	// 2. settings.json
-	const settings = readSettings();
+	const settings = readSettingsForDisplay(ctx);
 	if (settings.externalBackupDir) {
 		return settings.externalBackupDir;
 	}
@@ -53,9 +112,9 @@ function getExternalBackupDir(ctx?: any): string {
 }
 
 async function promptForExternalBackupDir(ctx: any): Promise<string | null> {
-	const currentDefault = getExternalBackupDir();
+	const currentDefault = getExternalBackupDir(ctx);
 	const source = process.env.BACKUP_ROOT ? "BACKUP_ROOT env var"
-		: readSettings().externalBackupDir ? "settings.json"
+		: readSettingsForDisplay(ctx).externalBackupDir ? "settings.json"
 		: "default";
 	const input = await ctx.ui.input(
 		`Configure external backup directory\n\nCurrent: ${currentDefault}\nSource: ${source}\n\nEnter a new path or press Enter to keep the current value:`,
@@ -66,10 +125,12 @@ async function promptForExternalBackupDir(ctx: any): Promise<string | null> {
 
 	const chosenPath = input.trim() || currentDefault;
 
-	// Save to settings.json
-	const settings = readSettings();
-	settings.externalBackupDir = chosenPath;
-	writeSettings(settings);
+	// Save to settings.json (refuses if the existing file is corrupt)
+	const saved = updateSettings((settings) => { settings.externalBackupDir = chosenPath; });
+	if (!saved.ok) {
+		ctx.ui.notify(`Could not save external backup directory: ${saved.error}`, "error");
+		return null;
+	}
 	ctx.ui.notify(`Saved external backup directory to settings.json:\n${chosenPath}`, "info");
 
 	// Ensure directory exists
@@ -82,47 +143,59 @@ function resolveExternalBackupDir(ctx?: any): string {
 	return getExternalBackupDir(ctx);
 }
 
+// PI_BACKUP_SCRIPT_DIR is a test hook that points at stub scripts.
+function scriptDir(): string {
+	return process.env.PI_BACKUP_SCRIPT_DIR || PACKAGE_ROOT;
+}
+
 function getBackupScriptPath(): string {
-return join(PACKAGE_ROOT, IS_WINDOWS ? "backup-pi.ps1" : "backup-pi.sh");
+	return join(scriptDir(), IS_WINDOWS ? "backup-pi.ps1" : "backup-pi.sh");
 }
 
 function getRestoreScriptPath(): string {
-return join(PACKAGE_ROOT, IS_WINDOWS ? "restore-pi.ps1" : "restore-pi.sh");
+	return join(scriptDir(), IS_WINDOWS ? "restore-pi.ps1" : "restore-pi.sh");
 }
 
-function findSevenZip(): string | null {
+async function findSevenZip(): Promise<string | null> {
 	const lookup = IS_WINDOWS ? "where.exe" : "which";
 	for (const candidate of ["7zz", "7z", "7za"]) {
 		try {
-			execFileSync(lookup, [candidate], { stdio: "ignore" });
+			await execFileAsync(lookup, [candidate]);
 			return candidate;
 		} catch {}
 	}
 	return null;
 }
 
-function expandZipWithPowerShell(archivePath: string, destination: string): void {
-	execFileSync("pwsh", [
+async function expandZipWithPowerShell(archivePath: string, destination: string): Promise<void> {
+	await execFileAsync("pwsh", [
 		"-NoProfile",
 		"-Command",
 		"Expand-Archive -LiteralPath $env:PI_BACKUP_ARCHIVE -DestinationPath $env:PI_BACKUP_DEST -Force",
 	], {
 		env: { ...process.env, PI_BACKUP_ARCHIVE: archivePath, PI_BACKUP_DEST: destination },
+		maxBuffer: MAX_BUFFER,
 	});
 }
 
-function extractArchive(archivePath: string, destination: string): void {
-	const sevenZip = findSevenZip();
+async function extractArchive(archivePath: string, destination: string): Promise<void> {
+	const sevenZip = await findSevenZip();
 	if (sevenZip) {
-		execFileSync(sevenZip, ["x", "-y", `-o${destination}`, archivePath]);
+		await execFileAsync(sevenZip, ["x", "-y", `-o${destination}`, archivePath], { maxBuffer: MAX_BUFFER });
 		return;
 	}
 	if (archivePath.endsWith(".zip")) {
-		if (IS_WINDOWS) expandZipWithPowerShell(archivePath, destination);
-		else execFileSync("unzip", ["-q", archivePath, "-d", destination]);
+		if (IS_WINDOWS) await expandZipWithPowerShell(archivePath, destination);
+		else await execFileAsync("unzip", ["-q", archivePath, "-d", destination], { maxBuffer: MAX_BUFFER });
 		return;
 	}
 	throw new Error("7zip is required to extract .7z backups and was not found on PATH");
+}
+
+/** stdout and stderr of a failed child process, falling back to the error message. */
+function describeExecError(e: any): string {
+	const text = [e?.stdout, e?.stderr].filter((v) => typeof v === "string" && v.trim()).join("\n").trim();
+	return text || e?.message || String(e);
 }
 
 function ensureDirs(externalDir: string) {
@@ -232,7 +305,7 @@ function discoverBackups(ctx?: any): BackupInfo[] {
 	return backups.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 }
 
-function runBackup(internal: boolean, ctx?: any): { success: boolean; output: string; backupPath?: string } {
+async function runBackup(internal: boolean, ctx?: any): Promise<{ success: boolean; output: string; backupPath?: string }> {
 	try {
 		const externalDir = resolveExternalBackupDir(ctx);
 		const env = { ...process.env };
@@ -243,47 +316,84 @@ function runBackup(internal: boolean, ctx?: any): { success: boolean; output: st
 			env.BACKUP_ROOT = externalDir;
 			env.KEEP_UNCOMPRESSED = "0"; // external: compressed archive only
 		}
-const command = IS_WINDOWS ? "pwsh" : getBackupScriptPath();
+		const command = IS_WINDOWS ? "pwsh" : getBackupScriptPath();
 		const args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getBackupScriptPath()] : [];
-		const output = execFileSync(command, args, { env, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+		const { stdout, stderr } = await execFileAsync(command, args, { env, encoding: "utf-8", maxBuffer: MAX_BUFFER });
+		const output = `${stdout}${stderr ? `\n${stderr}` : ""}`;
 		const match = output.match(/Staging:\s+(.+)$/m) || output.match(/Archive:\s+(.+)$/m);
 		const backupPath = match ? match[1].trim() : undefined;
 		return { success: true, output, backupPath };
 	} catch (e: any) {
-		return { success: false, output: e.stdout || e.stderr || e.message };
+		return { success: false, output: describeExecError(e) };
 	}
 }
 
-function runRestore(backupPath: string): { success: boolean; output: string } {
-	try {
-const command = IS_WINDOWS ? "pwsh" : getRestoreScriptPath();
-		const args = IS_WINDOWS ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getRestoreScriptPath(), backupPath] : [backupPath];
-		const output = execFileSync(command, args, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
-		return { success: true, output };
-	} catch (e: any) {
-		return { success: false, output: e.stdout || e.stderr || e.message };
-	}
+function shellQuote(value: string): string {
+	return IS_WINDOWS ? `'${value.replace(/'/g, "''")}'` : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function copyBackupToInternal(backup: BackupInfo): { success: boolean; output: string } {
+/**
+ * The command the user should run AFTER exiting Pi. Restore must not run inside the live Pi
+ * process: Pi would keep (and later rewrite) the files being replaced.
+ */
+function buildRestoreCommand(backupPath: string): string {
+	const script = getRestoreScriptPath();
+	if (IS_WINDOWS) {
+		return `$env:PI_BACKUP_ASSUME_YES='1'; pwsh -NoProfile -ExecutionPolicy Bypass -File ${shellQuote(script)} ${shellQuote(backupPath)}`;
+	}
+	return `PI_BACKUP_ASSUME_YES=1 ${shellQuote(script)} ${shellQuote(backupPath)}`;
+}
+
+/** Best-effort clipboard copy. Disabled with PI_BACKUP_NO_CLIPBOARD=1 (used by tests). */
+async function copyToClipboard(text: string): Promise<boolean> {
+	if (process.env.PI_BACKUP_NO_CLIPBOARD === "1") return false;
+	const candidates: Array<[string, string[]]> = IS_WINDOWS
+		? [["clip", []]]
+		: process.platform === "darwin"
+			? [["pbcopy", []]]
+			: [["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]]];
+	for (const [cmd, args] of candidates) {
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const child = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"] });
+				child.on("error", reject);
+				child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+				child.stdin.on("error", reject);
+				child.stdin.end(text);
+			});
+			return true;
+		} catch {}
+	}
+	return false;
+}
+
+async function copyBackupToInternal(backup: BackupInfo): Promise<{ success: boolean; output: string }> {
 	if (backup.location === "internal") return { success: true, output: "Already in internal storage" };
+	const destPath = join(INTERNAL_BACKUP_DIR, backup.isCompressed ? backup.name.replace(/\.(zip|7z)$/, "") : backup.name);
+	let tmpDir: string | null = null;
+	let created = false;
 	try {
-		const destName = backup.name;
-		const destPath = join(INTERNAL_BACKUP_DIR, destName);
+		if (existsSync(destPath)) throw new Error(`Already exists in internal storage: ${destPath}`);
+		mkdirSync(INTERNAL_BACKUP_DIR, { recursive: true });
 		if (backup.isCompressed) {
-			const tmpDir = join(INTERNAL_BACKUP_DIR, `.tmp-${Date.now()}`);
+			tmpDir = join(INTERNAL_BACKUP_DIR, `.tmp-${Date.now()}`);
 			mkdirSync(tmpDir, { recursive: true });
-			extractArchive(backup.path, tmpDir);
+			await extractArchive(backup.path, tmpDir);
 			const extracted = readdirSync(tmpDir)[0];
 			if (!extracted) throw new Error(`Archive is empty: ${backup.path}`);
+			created = true;
 			cpSync(join(tmpDir, extracted), destPath, { recursive: true });
-			rmSync(tmpDir, { recursive: true, force: true });
 		} else {
+			created = true;
 			cpSync(backup.path, destPath, { recursive: true });
 		}
+		created = false; // complete
 		return { success: true, output: `Copied to ${destPath}` };
 	} catch (e: any) {
-		return { success: false, output: e.message };
+		if (created) rmSync(destPath, { recursive: true, force: true });
+		return { success: false, output: describeExecError(e) };
+	} finally {
+		if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
 	}
 }
 
@@ -316,7 +426,6 @@ function findFile(dir: string, name: string): string | null {
 }
 
 export default function piBackupManagerExtension(pi: ExtensionAPI) {
-	console.error("[pi-backup-manager] Extension loaded");
 	pi.registerCommand("pi-backup", {
 		description: "Manage Pi backups - create, restore, view, copy, delete",
 		handler: async (_args, ctx) => {
@@ -327,6 +436,17 @@ export default function piBackupManagerExtension(pi: ExtensionAPI) {
 			await showMainMenu(ctx);
 		},
 	});
+}
+
+/** Show a working status while a long task runs, when the host supports it. */
+async function withStatus<T>(ctx: any, message: string, task: () => Promise<T>): Promise<T> {
+	const setStatus = typeof ctx?.ui?.setStatus === "function" ? ctx.ui.setStatus.bind(ctx.ui) : null;
+	setStatus?.("pi-backup", message);
+	try {
+		return await task();
+	} finally {
+		setStatus?.("pi-backup", undefined);
+	}
 }
 
 async function showMainMenu(ctx: any) {
@@ -363,7 +483,7 @@ async function createBackup(ctx: any, internal: boolean) {
 	// Only prompt if no env/settings value AND the default dir is empty/missing.
 	if (!internal) {
 		const externalDir = getExternalBackupDir(ctx);
-		const settings = readSettings();
+		const settings = readSettingsForDisplay(ctx);
 		const explicitlyConfigured = process.env.BACKUP_ROOT || settings.externalBackupDir;
 		const defaultHasContent = existsSync(externalDir) && readdirSync(externalDir).length > 0;
 		if (!explicitlyConfigured && !defaultHasContent) {
@@ -373,12 +493,25 @@ async function createBackup(ctx: any, internal: boolean) {
 	}
 
 	ctx.ui.notify(`Creating ${internal ? "internal" : "external"} backup...`, "info");
-	const result = runBackup(internal, ctx);
+	const result = await withStatus(ctx, `Creating ${internal ? "internal" : "external"} backup…`, () => runBackup(internal, ctx));
 	if (result.success) {
-		ctx.ui.notify(`Backup created successfully${result.backupPath ? `\n${result.backupPath}` : ""}`, "info");
+		const credentials = "\n⚠️  The backup contains auth.json (API credentials). Keep it private.";
+		ctx.ui.notify(`Backup created successfully${result.backupPath ? `\n${result.backupPath}` : ""}${credentials}`, "info");
 	} else {
 		ctx.ui.notify(`Backup failed:\n${result.output}`, "error");
 	}
+}
+
+/** Unique, exact-match labels for the backup list (never substring-match names). */
+function buildLabels(backups: BackupInfo[]): Map<string, BackupInfo> {
+	const labels = new Map<string, BackupInfo>();
+	for (const b of backups) {
+		const base = formatBackupLine(b);
+		let label = base;
+		for (let n = 2; labels.has(label); n++) label = `${base}  (${b.location} #${n})`;
+		labels.set(label, b);
+	}
+	return labels;
 }
 
 async function showBackupList(ctx: any) {
@@ -389,7 +522,8 @@ async function showBackupList(ctx: any) {
 	}
 
 	while (true) {
-		const lines = backups.map(formatBackupLine);
+		const labels = buildLabels(backups);
+		const lines = [...labels.keys()];
 		lines.push("🔄 Refresh");
 		lines.push("← Back");
 
@@ -397,11 +531,12 @@ async function showBackupList(ctx: any) {
 		if (!selected || selected.startsWith("←")) return;
 		if (selected.startsWith("🔄")) { backups = discoverBackups(ctx); continue; }
 
-		const backup = backups.find(b => selected.includes(b.name));
+		const backup = labels.get(selected);
 		if (!backup) continue;
 
 		await showBackupActions(ctx, backup);
 		backups = discoverBackups(ctx);
+		if (backups.length === 0) return;
 	}
 }
 
@@ -426,30 +561,32 @@ async function showBackupActions(ctx: any, backup: BackupInfo) {
 
 	if (choice.startsWith("🔄")) await confirmRestore(ctx, backup);
 	else if (choice.startsWith("📋")) {
-		const result = copyBackupToInternal(backup);
+		const result = await withStatus(ctx, "Copying backup…", () => copyBackupToInternal(backup));
 		ctx.ui.notify(result.success ? result.output : `Failed: ${result.output}`, result.success ? "info" : "error");
 	} else if (choice.startsWith("📄")) await viewManifest(ctx, backup);
 	else if (choice.startsWith("🗑️")) await confirmDelete(ctx, backup);
 }
 
 async function confirmRestore(ctx: any, backup: BackupInfo) {
-	// Restore uses the backup's direct path, so no directory config is needed here.
+	// Restore replaces files that the running Pi process owns, so the TUI never runs it in-process.
 	const confirmed = await ctx.ui.confirm(
 		`Restore ${backup.name}?`,
-		`⚠️  This will OVERWRITE all current Pi configuration!\n` +
-		`Backup: ${formatTimestamp(backup.timestamp)} • ${backup.size} • ${backup.files} files\n` +
-		`Pi must NOT be running during restore.\n\n` +
-		`Are you sure?`,
+		`⚠️  Restoring OVERWRITES all current Pi configuration.\n` +
+		`Backup: ${formatTimestamp(backup.timestamp)} • ${backup.size} • ${backup.files} files\n\n` +
+		`Pi cannot restore itself while running. Choosing Yes shows the command to run\n` +
+		`AFTER you exit Pi (nothing is changed now).\n\n` +
+		`Continue?`,
 	);
 	if (!confirmed) return;
 
-	ctx.ui.notify("Restoring... (this may take a moment)", "info");
-	const result = runRestore(backup.path);
-	if (result.success) {
-		ctx.ui.notify("Restore complete!\n\nNext steps:\n1. cd ~/.pi/agent && npm install\n2. pi --version\n3. /ctx-doctor", "info");
-	} else {
-		ctx.ui.notify(`Restore failed:\n${result.output}`, "error");
-	}
+	const command = buildRestoreCommand(backup.path);
+	const copied = await copyToClipboard(command);
+	ctx.ui.notify(
+		`To restore, exit Pi, then run this in a terminal:\n\n${command}\n\n` +
+		`${copied ? "(Copied to the clipboard.)\n" : ""}` +
+		`Afterwards: cd ~/.pi/agent && npm install, then pi --version and /ctx-doctor.`,
+		"info",
+	);
 }
 
 async function confirmDelete(ctx: any, backup: BackupInfo) {
@@ -466,19 +603,20 @@ async function confirmDelete(ctx: any, backup: BackupInfo) {
 async function viewManifest(ctx: any, backup: BackupInfo) {
 	let content: string;
 	if (backup.isCompressed) {
+		mkdirSync(INTERNAL_BACKUP_DIR, { recursive: true });
 		const tmpDir = join(INTERNAL_BACKUP_DIR, `.tmp-manifest-${Date.now()}`);
 		mkdirSync(tmpDir, { recursive: true });
 		try {
-			extractArchive(backup.path, tmpDir);
+			await withStatus(ctx, "Reading manifest…", () => extractArchive(backup.path, tmpDir));
 			const found = findFile(tmpDir, "MANIFEST.txt");
 			if (!found) throw new Error("MANIFEST.txt not found in archive");
 			content = readFileSync(found, "utf-8");
 		} catch (e: any) {
-			ctx.ui.notify(`Failed to extract manifest: ${e.message}`, "error");
-			rmSync(tmpDir, { recursive: true, force: true });
+			ctx.ui.notify(`Failed to extract manifest: ${describeExecError(e)}`, "error");
 			return;
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
 		}
-		rmSync(tmpDir, { recursive: true, force: true });
 	} else {
 		const manifestPath = join(backup.path, "MANIFEST.txt");
 		if (!existsSync(manifestPath)) {
@@ -494,7 +632,7 @@ async function viewManifest(ctx: any, backup: BackupInfo) {
 async function configureExternalDir(ctx: any) {
 	const current = getExternalBackupDir(ctx);
 	const source = process.env.BACKUP_ROOT ? "environment variable (BACKUP_ROOT)"
-		: readSettings().externalBackupDir ? "settings.json"
+		: readSettingsForDisplay(ctx).externalBackupDir ? "settings.json"
 		: "default (not yet saved)";
 
 	const choice = await ctx.ui.select(
@@ -511,9 +649,11 @@ async function configureExternalDir(ctx: any) {
 	if (choice.startsWith("📝")) {
 		await promptForExternalBackupDir(ctx);
 	} else if (choice.startsWith("🔄")) {
-		const settings = readSettings();
-		delete settings.externalBackupDir;
-		writeSettings(settings);
+		const saved = updateSettings((settings) => { delete settings.externalBackupDir; });
+		if (!saved.ok) {
+			ctx.ui.notify(`Could not reset external backup directory: ${saved.error}`, "error");
+			return;
+		}
 		ctx.ui.notify("Reset to default. Will use environment variable or default path.", "info");
 	}
 }
@@ -528,13 +668,18 @@ async function showHelp(ctx: any) {
 - **Purpose**: Quick rollback during normal use
 - **Survives**: Pi updates, extension installs, config changes
 - **Does NOT survive**: Clean reinstall (\`rm -rf ~/.pi\`)
-- **Format**: Uncompressed directories (fast access)
+- **Format**: Uncompressed directories only (fast access)
 
 ### 💾 External (${externalDir})
 - **Purpose**: Disaster recovery
 - **Survives**: Clean reinstall, disk failure (if copied elsewhere)
 - **Does NOT survive**: Deleting the backup directory
-- **Format**: Compressed archives (.7z/.zip) + optional uncompressed
+- **Format**: Compressed archives (.7z/.zip)
+
+## ⚠️ Credentials
+
+Backups include \`auth.json\` (API keys / tokens) unless you set \`PI_BACKUP_EXCLUDE_AUTH=1\`.
+Treat every backup as a secret: keep it private and never share or commit it.
 
 ## Configuration Priority
 
@@ -545,6 +690,7 @@ The external backup directory is resolved in this order:
 3. **Default**: \`~/pi-backups/\`
 
 Use **⚙️ Configure external backup directory** in the main menu to change the settings.json value.
+If settings.json is corrupt, it is never overwritten: defaults are used and you are told.
 
 ## When to Use Which
 
@@ -558,10 +704,13 @@ Use **⚙️ Configure external backup directory** in the main menu to change th
 
 ## Restore Process
 
-1. Select backup → Restore
-2. Script overwrites all config in \`~/.pi/agent/\`
-3. **After restore**: Run \`cd ~/.pi/agent && npm install\`
-4. Verify: \`pi --version\`, \`/ctx-doctor\`
+Pi cannot restore itself while it is running, so the TUI never restores in-process.
+
+1. Select backup → Restore → confirm
+2. The TUI shows (and copies, where possible) the exact command
+3. **Exit Pi**, then run that command in a terminal
+4. **After restore**: Run \`cd ~/.pi/agent && npm install\`
+5. Verify: \`pi --version\`, \`/ctx-doctor\`
 
 ## Manual Backup/Restore
 
@@ -574,6 +723,9 @@ BACKUP_ROOT=/mnt/backups ./backup-pi.sh
 
 # Restore from external
 ./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000
+
+# Scripted restore (skip the prompt)
+PI_BACKUP_ASSUME_YES=1 ./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000
 \`\`\`
 
 ## What Gets Backed Up
