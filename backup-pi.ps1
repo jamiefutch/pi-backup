@@ -29,6 +29,15 @@ function OK   { Write-Host "[OK]    $args"     -ForegroundColor Green }
 function Warn { Write-Host "[WARN]  $args"     -ForegroundColor Yellow }
 function Err  { Write-Host "[ERR]   $args"     -ForegroundColor Red; exit 1 }
 
+# Restrict a path to the current user on Unix (no-op on Windows, where ACLs apply).
+function Set-PrivateMode([string]$path, [bool]$isDir = $false) {
+    if ($IsWindows -or $env:OS -eq 'Windows_NT') { return }
+    try {
+        $mode = if ($isDir) { 'UserRead,UserWrite,UserExecute' } else { 'UserRead,UserWrite' }
+        [System.IO.File]::SetUnixFileMode($path, [System.IO.UnixFileMode]$mode)
+    } catch { Warn "  could not restrict permissions on ${path}: $($_.Exception.Message)" }
+}
+
 function Copy-IfExists([string]$src, [string]$dst) {
     if (Test-Path -LiteralPath $src) {
         $dstDir = Split-Path $dst -Parent
@@ -82,6 +91,7 @@ $KeepStagingOnFail = $false
 $archivePath = $null
 try {
 New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null
+Set-PrivateMode $ArchiveDir $true
 
 Write-Host ""
 Log "================================================================"
@@ -95,7 +105,17 @@ Write-Host ""
 Log "1/8  Core configuration files..."
 $agentDir = Join-Path $PiRoot 'agent'
 Copy-IfExists (Join-Path $agentDir 'settings.json')           (Join-Path $ArchiveDir 'settings.json')
-Copy-IfExists (Join-Path $agentDir 'auth.json')               (Join-Path $ArchiveDir 'auth.json')
+if ($env:PI_BACKUP_EXCLUDE_AUTH -eq '1') {
+    Warn "  auth.json - excluded (PI_BACKUP_EXCLUDE_AUTH=1)"
+} else {
+    Copy-IfExists (Join-Path $agentDir 'auth.json')           (Join-Path $ArchiveDir 'auth.json')
+    $authCopy = Join-Path $ArchiveDir 'auth.json'
+    if (Test-Path -LiteralPath $authCopy) {
+        Set-PrivateMode $authCopy
+        Warn "  auth.json holds your API credentials and is included in this backup."
+        Warn "  Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out."
+    }
+}
 Copy-IfExists (Join-Path $agentDir 'models.json')             (Join-Path $ArchiveDir 'models.json')
 Copy-IfExists (Join-Path $agentDir 'trust.json')              (Join-Path $ArchiveDir 'trust.json')
 Copy-IfExists (Join-Path $agentDir 'keybindings.json')        (Join-Path $ArchiveDir 'keybindings.json')
@@ -231,6 +251,7 @@ if ($KeepUncompressed) {
         } else {
             Compress-Archive -LiteralPath $ArchiveDir -DestinationPath $archivePath -CompressionLevel Optimal -Force
         }
+        Set-PrivateMode $archivePath
         OK "  $archivePath"
     } catch {
         Warn "  Compression ($ArchiveExtension) failed: $($_.Exception.Message)"

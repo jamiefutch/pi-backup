@@ -232,6 +232,18 @@ Files:    347
 
 ---
 
+## Security
+
+> **Backups contain `auth.json`, which holds your API keys and tokens.** Treat every backup (directory, `.zip`, `.7z`) as a secret.
+
+- Backups are created private to your user: `umask 077` on macOS/Linux, `auth.json` is `chmod 600`, and archives are `600` (on Windows, rely on your profile folder's ACLs and avoid shared drives).
+- Set `PI_BACKUP_EXCLUDE_AUTH=1` to leave `auth.json` out entirely (you will need to sign in to providers again after a restore).
+- Restore sets a restored `auth.json` back to `600`.
+- There is intentionally no built-in encryption: passing a password to `7z` on the command line leaks it through `ps`. If you need encryption, encrypt the finished archive yourself (for example with `age` or `gpg`) or store backups on an encrypted volume.
+- Never commit or share backups. They are also in `.gitignore` (`*.7z`, `*.zip`, `backups/`).
+
+---
+
 ## Backup Location
 
 ```
@@ -297,6 +309,8 @@ If the default directory already contains backups, it is treated as configured a
 | `BACKUP_ROOT` | `~/pi-backups` | Override backup destination (highest priority for the TUI too) |
 | `LOCAL_EXT_ROOT` | `~/projects` | Override the directory containing local extension source repositories |
 | `KEEP_UNCOMPRESSED` | `0` | Keep the uncompressed staging directory after external backup; the TUI sets this automatically for internal backups |
+| `PI_BACKUP_ASSUME_YES` | unset | Set to `1` to skip the restore confirmation prompt (scripted use). Without it, restore needs an interactive terminal and exits with a clear message otherwise |
+| `PI_BACKUP_EXCLUDE_AUTH` | unset | Set to `1` to leave `auth.json` (API credentials) out of the backup |
 | `PKG_MANAGER` | `bun` | Package manager used by the clean-reinstall scripts (`bun`, `npm`, etc.) |
 
 ```bash

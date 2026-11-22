@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+# Backups contain credentials (auth.json): keep everything we create private to this user.
+umask 077
+
 # ─── Config ──────────────────────────────────────────────────────
 PI_ROOT="${PI_ROOT:-$HOME/.pi}"
 BACKUP_ROOT="${BACKUP_ROOT:-$HOME/pi-backups}"
@@ -106,7 +109,16 @@ main() {
   # ── 1. Core Config Files ──────────────────────────────────────
   log "1/8  Core configuration files..."
   copy_if_exists "$PI_ROOT/agent/settings.json"           "$BACKUP_DIR/settings.json"
-  copy_if_exists "$PI_ROOT/agent/auth.json"               "$BACKUP_DIR/auth.json"
+  if [[ "${PI_BACKUP_EXCLUDE_AUTH:-0}" == "1" ]]; then
+    warn "  auth.json — excluded (PI_BACKUP_EXCLUDE_AUTH=1)"
+  else
+    copy_if_exists "$PI_ROOT/agent/auth.json"             "$BACKUP_DIR/auth.json"
+    if [[ -f "$BACKUP_DIR/auth.json" ]]; then
+      chmod 600 "$BACKUP_DIR/auth.json"
+      warn "  auth.json holds your API credentials and is included in this backup."
+      warn "  Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out."
+    fi
+  fi
   copy_if_exists "$PI_ROOT/agent/models.json"             "$BACKUP_DIR/models.json"
   copy_if_exists "$PI_ROOT/agent/trust.json"              "$BACKUP_DIR/trust.json"
   copy_if_exists "$PI_ROOT/agent/keybindings.json"        "$BACKUP_DIR/keybindings.json"

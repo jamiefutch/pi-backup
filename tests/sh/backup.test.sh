@@ -25,7 +25,7 @@ t_internal_no_zip() {
   make_fixture
   # PATH with essential tools only (no zip, no 7z)
   local d="$SANDBOX/minbin" t; mkdir -p "$d"
-  for t in bash env date mkdir cp cat find sed sort basename dirname hostname whoami ls wc tr head rm tar du cut uname dirname rsync mktemp; do
+  for t in bash env date mkdir cp cat find sed sort basename dirname hostname whoami ls wc tr head rm tar du cut uname rsync mktemp chmod; do
     p="$(command -v $t 2>/dev/null)" && ln -sf "$p" "$d/$t"
   done
   ln -sf "$STUB_BIN/pi" "$d/pi"
@@ -86,6 +86,22 @@ t_auth_mode_and_warning() {
   assert_contains "$out" "credentials" "credential warning"
 }
 
+t_archive_private() {
+  [[ "$(uname)" == MINGW* || "$(uname)" == MSYS* ]] && return 0
+  make_fixture
+  KEEP_UNCOMPRESSED=0 run_script "$1" backup-pi >/dev/null 2>&1
+  local ar; ar="$(ls "$BACKUP_ROOT"/pi-backup-*.* | head -1)"
+  assert_eq "$(file_mode "$ar")" 600 "archive mode"
+}
+t_exclude_auth_archive() {
+  command -v unzip >/dev/null || { echo "    (skip: no unzip)"; return 0; }
+  make_fixture
+  PI_BACKUP_EXCLUDE_AUTH=1 KEEP_UNCOMPRESSED=0 run_script "$1" backup-pi >/dev/null 2>&1
+  local ar; ar="$(ls "$BACKUP_ROOT"/pi-backup-*.zip 2>/dev/null | head -1)"
+  [[ -n "$ar" ]] || { echo "    (skip: 7z archive produced)"; return 0; }
+  assert_not_contains "$(unzip -l "$ar")" "auth.json" "zip listing"
+}
+
 # Bug 7: archive has a single top-level pi-backup-*/ entry.
 t_archive_layout() {
   command -v 7zz >/dev/null || command -v 7z >/dev/null || { echo "    (skip: no 7-Zip)"; return 0; }
@@ -107,5 +123,7 @@ run_test "compression failure keeps staging, no partial archive" t_compress_fail
 run_test "failed backup removes half-built staging" t_failure_removes_staging
 run_test "EXCLUDE_AUTH omits auth.json"           t_exclude_auth
 run_test "auth.json mode 600 and warning"         t_auth_mode_and_warning
+run_test "archive is private (600)"                 t_archive_private
+run_test "EXCLUDE_AUTH keeps auth.json out of the archive" t_exclude_auth_archive
 run_test "archive has single top-level dir"       t_archive_layout
 finish

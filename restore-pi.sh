@@ -170,6 +170,8 @@ main() {
   restore_file "$BACKUP_DIR/hermes-memory-config.json"  "$PI_ROOT/agent/hermes-memory-config.json"
   restore_file "$BACKUP_DIR/pi.code-workspace"          "$PI_ROOT/agent/pi.code-workspace"
 
+  [[ -f "$PI_ROOT/agent/auth.json" && -f "$BACKUP_DIR/auth.json" ]] && chmod 600 "$PI_ROOT/agent/auth.json"
+
   # ── 2. Extension Configs ──────────────────────────────────────
   log "2/8  Extension configurations..."
   restore_file "$BACKUP_DIR/pi-hermes-memory-cleanup/scoped-memory.json" \

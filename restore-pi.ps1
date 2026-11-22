@@ -213,6 +213,11 @@ Restore-File (Join-Path $BackupDir 'lmstudio.json.bak')          (Join-Path $age
 Restore-File (Join-Path $BackupDir 'hermes-memory-config.json')  (Join-Path $agentDir 'hermes-memory-config.json')
 Restore-File (Join-Path $BackupDir 'pi.code-workspace')          (Join-Path $agentDir 'pi.code-workspace')
 
+$restoredAuth = Join-Path $agentDir 'auth.json'
+if ((Test-Path -LiteralPath (Join-Path $BackupDir 'auth.json')) -and (Test-Path -LiteralPath $restoredAuth) -and -not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
+    try { [System.IO.File]::SetUnixFileMode($restoredAuth, [System.IO.UnixFileMode]'UserRead,UserWrite') } catch { Warn "  could not restrict permissions on auth.json: $($_.Exception.Message)" }
+}
+
 # ── 2. Extension Configs ──────────────────────────────────
 Log "2/8  Extension configurations..."
 Restore-File (Join-Path $BackupDir 'pi-hermes-memory-cleanup\scoped-memory.json') (Join-Path $agentDir 'pi-hermes-memory-cleanup\scoped-memory.json')

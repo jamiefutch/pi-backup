@@ -73,6 +73,14 @@ t_running_warning() {
   assert_contains "$out" "appears to be running" "running-Pi warning"
 }
 
+t_auth_mode() {
+  [[ "$(uname)" == MINGW* || "$(uname)" == MSYS* ]] && return 0
+  make_dir_backup "$1"
+  chmod 644 "$BK/auth.json"; rm -f "$PI_ROOT/agent/auth.json"
+  PI_BACKUP_ASSUME_YES=1 run_script "$1" restore-pi "$BK" </dev/null >/dev/null 2>&1
+  assert_eq "$(file_mode "$PI_ROOT/agent/auth.json")" 600 "restored auth.json mode"
+}
+
 echo "restore tests"
 run_test "no stdin fails with a clear message"      t_no_stdin
 run_test "PI_BACKUP_ASSUME_YES skips the prompt"    t_assume_yes
@@ -80,5 +88,6 @@ run_test "no temp leak: abort"                      t_leak_abort
 run_test "no temp leak: success"                    t_leak_success
 run_test "no temp leak: truncated archive"          t_leak_truncated
 run_test "no temp leak: mid-restore failure"        t_leak_midfail
+run_test "restored auth.json is mode 600"            t_auth_mode
 run_test "warns when Pi is running"                 t_running_warning
 finish

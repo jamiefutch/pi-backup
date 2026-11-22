@@ -93,4 +93,15 @@ test("backups run without blocking the event loop", skipOnWindows, async () => {
 	assert.ok(ticks >= 10, `event loop ticked only ${ticks} times during the backup`);
 });
 
+test("help text and backup notice warn about credentials", skipOnWindows, async () => {
+	const help = fakeCtx({ selects: ["Help"] });
+	await runCommand(commands, help);
+	const text = help.editors.map((e) => e.content).join("\n");
+	assert.ok(text.includes("auth.json"));
+	assert.ok(text.includes("PI_BACKUP_EXCLUDE_AUTH"));
+	const created = fakeCtx({ selects: ["Create internal backup"] });
+	await runCommand(commands, created);
+	assert.ok(created.notices.some((n) => /auth\.json/.test(n.message)), "creation notice mentions credentials");
+});
+
 test.after(() => box.cleanup());
