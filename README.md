@@ -158,6 +158,14 @@ The clean reinstall is rollback-safe: it checks that a backup exists in `BACKUP_
 ./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000.7z
 ```
 
+Exit Pi first: the script warns (but does not block) if it detects a running Pi process, because files restored under a running Pi can be overwritten when it exits. Restore asks for confirmation; it needs an interactive terminal and otherwise stops with a message. For scripted use, set `PI_BACKUP_ASSUME_YES=1`:
+
+```bash
+PI_BACKUP_ASSUME_YES=1 ./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000.7z
+```
+
+Temporary extraction directories are always removed, including when you answer `n`, the archive is damaged, or a copy fails part-way.
+
 #### 4. Reinstall npm deps + verify
 ```bash
 cd ~/.pi/agent && npm install  # or bun install
@@ -210,19 +218,38 @@ The list lives in one file, [`backup-manifest.txt`](backup-manifest.txt), read b
 | **Hermes memory (active)** | `MEMORY.md`, `USER.md`, `failures.md`, `retired-failures.md`, `retired-memory.md` |
 | **Cleanup backups** | Last 5 timestamped (`20*`) directories from `~/.pi/agent/hermes-cleanup/` |
 
-The backup script output:
+Example output of `./backup-pi.sh` (captured from a real run, abridged):
 ```
-════════════════════════════════════════════════════════════
-  Pi Complete Backup
-════════════════════════════════════════════════════════════
-Source:      ~/.pi
-Destination: ~/pi-backups/pi-backup-20260811-143000
+[INFO] ════════════════════════════════════════════════════════════
+[INFO]   Pi Complete Backup
+[INFO] ════════════════════════════════════════════════════════════
+[INFO] Source:      ~/.pi
+[INFO] Destination: ~/pi-backups/pi-backup-20261122-011819
+
+[INFO] 1/8  Core configuration files...
+[OK]     settings.json
+[OK]     auth.json
+[WARN]   auth.json holds your API credentials and is included in this backup.
+[WARN]   Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out.
+[OK]     models.json
+[WARN]   keybindings.json — not found, skipping
 ...
-Backup complete!
-Location: ~/pi-backups/pi-backup-20260811-143000
-Size:     12M
-Files:    347
+[INFO] 8/8  Recent hermes-cleanup backups (last 5)...
+[OK]     20260107/
+...
+[INFO] 9/9  Compressing backup (zip)...
+[OK]     ~/pi-backups/pi-backup-20261122-011819.zip
+
+[INFO] ════════════════════════════════════════════════════════════
+[OK]   Backup complete!
+[INFO] Archive:  ~/pi-backups/pi-backup-20261122-011819.zip
+[INFO] Size:     12K
+
+[INFO] To restore after reinstall:
+[INFO]   ./restore-pi.sh ~/pi-backups/pi-backup-20261122-011819.zip
 ```
+
+An internal backup (`KEEP_UNCOMPRESSED=1`, what the TUI's **Create internal backup** runs) skips the compression step and prints `Staging:  <directory>` instead of `Archive:`.
 
 ## What Does NOT Get Backed Up (Regeneratable)
 
@@ -312,7 +339,7 @@ If the default directory already contains backups, it is treated as configured a
 | `PI_ROOT` | `~/.pi` | Override Pi root directory |
 | `BACKUP_ROOT` | `~/pi-backups` | Override backup destination (highest priority for the TUI too) |
 | `LOCAL_EXT_ROOT` | `~/projects` | Override the directory containing local extension source repositories |
-| `KEEP_UNCOMPRESSED` | `0` | Keep the uncompressed staging directory after external backup; the TUI sets this automatically for internal backups |
+| `KEEP_UNCOMPRESSED` | `0` | `1` makes a plain, uncompressed staging directory and skips compression (no `zip`/7-Zip needed); the TUI sets this for internal backups. With `0` the staging directory is compressed and removed |
 | `PI_BACKUP_ASSUME_YES` | unset | Set to `1` to skip the restore confirmation prompt (scripted use). Without it, restore needs an interactive terminal and exits with a clear message otherwise |
 | `PI_BACKUP_EXCLUDE_AUTH` | unset | Set to `1` to leave `auth.json` (API credentials) out of the backup |
 | `KEEP_OLD` | unset | Set to `1` to keep `~/.pi.pre-reinstall-<timestamp>` after a successful clean reinstall |
@@ -345,7 +372,10 @@ PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ./backup-pi.sh
 | "npm install fails" | Check Node.js version (need ≥22), try `bun install` |
 | "Skills not loading" | Verify `settings.json` has correct `packages` paths after restore |
 | "Models not found" | Check `models.json` restored correctly, restart Pi |
-| "Auth failed" | Verify `auth.json` restored, API keys valid |
+| "Auth failed" | Verify `auth.json` restored, API keys valid (it is absent if the backup was made with `PI_BACKUP_EXCLUDE_AUTH=1`) |
+| Restore says "Cannot read a confirmation" | stdin is not a terminal (cron, CI, pipe). Run it in a terminal or set `PI_BACKUP_ASSUME_YES=1` |
+| Backup says "Compression ... failed" | The staging directory is kept (it is intact). Fix 7-Zip/zip and re-run, or restore directly from the staging directory |
+| TUI says `settings.json could not be parsed` | The file is never overwritten. Fix the JSON (or delete the file) and retry; `settings.json.bak-*` copies are kept from earlier saves |
 
 ---
 

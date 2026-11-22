@@ -66,6 +66,11 @@ function Set-PrivateMode([string]$path, [bool]$isDir = $false) {
     } catch { Warn "  could not restrict permissions on ${path}: $($_.Exception.Message)" }
 }
 
+function Get-RelativeLabel([string]$path) {
+    if ($path.StartsWith($ArchiveDir)) { return $path.Substring($ArchiveDir.Length).TrimStart('\','/').Replace('\','/') }
+    return [System.IO.Path]::GetFileName($path)
+}
+
 # auth.json holds credentials: optionally excluded, always private, always flagged.
 function Backup-Auth([string]$src, [string]$dst) {
     if ($env:PI_BACKUP_EXCLUDE_AUTH -eq '1') {
@@ -85,9 +90,9 @@ function Copy-IfExists([string]$src, [string]$dst) {
         $dstDir = Split-Path $dst -Parent
         if (!(Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
         Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
-        OK "  $([System.IO.Path]::GetFileName($src))"
+        OK "  $(Get-RelativeLabel $dst)"
     } else {
-        Warn "  $([System.IO.Path]::GetFileName($src)) - not found, skipping"
+        Warn "  $(Get-RelativeLabel $dst) - not found, skipping"
     }
 }
 

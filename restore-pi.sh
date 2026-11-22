@@ -139,9 +139,9 @@ restore_file() {
   if [[ -f "$src" ]]; then
     mkdir -p "$(dirname "$dst")"
     cp "$src" "$dst"
-    ok "  $(basename "$src")"
+    ok "  ${src#"$BACKUP_DIR"/}"
   else
-    warn "  $(basename "$src") — not in backup, skipping"
+    warn "  ${src#"$BACKUP_DIR"/} — not in backup, skipping"
   fi
 }
 

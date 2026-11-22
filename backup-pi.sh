@@ -83,9 +83,9 @@ copy_if_exists() {
   if [[ -e "$src" ]]; then
     mkdir -p "$(dirname "$dst")"
     cp -a "$src" "$dst"
-    ok "  $(basename "$src")"
+    ok "  ${dst#"$BACKUP_DIR"/}"
   else
-    warn "  $(basename "$src") — not found, skipping"
+    warn "  ${dst#"$BACKUP_DIR"/} — not found, skipping"
   fi
 }
 

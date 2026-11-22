@@ -172,14 +172,19 @@ if ($env:PI_BACKUP_ASSUME_YES -eq '1') {
 }
 
 # ─── Helpers ──────────────────────────────────────────────
+function Get-RelativeLabel([string]$path) {
+    if ($BackupDir -and $path.StartsWith($BackupDir)) { return $path.Substring($BackupDir.Length).TrimStart('\','/').Replace('\','/') }
+    return [System.IO.Path]::GetFileName($path)
+}
+
 function Restore-File([string]$src, [string]$dst) {
     if (Test-Path -LiteralPath $src -PathType Leaf) {
         $dstDir = Split-Path $dst -Parent
         if (!(Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
         Copy-Item -LiteralPath $src -Destination $dst -Force
-        OK "  $([System.IO.Path]::GetFileName($src))"
+        OK "  $(Get-RelativeLabel $src)"
     } else {
-        Warn "  $([System.IO.Path]::GetFileName($src)) - not in backup, skipping"
+        Warn "  $(Get-RelativeLabel $src) - not in backup, skipping"
     }
 }
 
