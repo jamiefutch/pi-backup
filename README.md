@@ -151,6 +151,8 @@ Backup: pi-backup-20260812-112019.7z
 ./pi-clean-reinstall.sh
 ```
 
+The clean reinstall is rollback-safe: it checks that a backup exists in `BACKUP_ROOT` (and asks for an extra `no backup` confirmation if not), **moves** `~/.pi` to `~/.pi.pre-reinstall-<timestamp>`, uninstalls and reinstalls Pi, verifies `pi --version`, and only then deletes the moved copy. If any step fails, the original `~/.pi` is moved back. Set `KEEP_OLD=1` to keep the moved-aside copy.
+
 #### 3. Restore a directory, `.7z` archive, or `.zip` archive
 ```bash
 ./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000.7z
@@ -311,6 +313,7 @@ If the default directory already contains backups, it is treated as configured a
 | `KEEP_UNCOMPRESSED` | `0` | Keep the uncompressed staging directory after external backup; the TUI sets this automatically for internal backups |
 | `PI_BACKUP_ASSUME_YES` | unset | Set to `1` to skip the restore confirmation prompt (scripted use). Without it, restore needs an interactive terminal and exits with a clear message otherwise |
 | `PI_BACKUP_EXCLUDE_AUTH` | unset | Set to `1` to leave `auth.json` (API credentials) out of the backup |
+| `KEEP_OLD` | unset | Set to `1` to keep `~/.pi.pre-reinstall-<timestamp>` after a successful clean reinstall |
 | `PKG_MANAGER` | `bun` | Package manager used by the clean-reinstall scripts (`bun`, `npm`, etc.) |
 
 ```bash
