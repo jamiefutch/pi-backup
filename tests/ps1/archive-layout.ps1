@@ -11,6 +11,19 @@ $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("pi-backup-ps-test-" + [
 New-Item -ItemType Directory -Path $sandbox | Out-Null
 $sandbox = (Resolve-Path -LiteralPath $sandbox).Path
 $failed = 0
+# backup-pi.ps1 runs `pi --version`. A real pi (a Node CLI) writes a compile cache under TMPDIR,
+# which is this sandbox's temp dir, and then the leftover check fails. Use a stub pi instead.
+$stubDir = Join-Path $sandbox 'bin'
+New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
+$origPath = $env:PATH
+if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+    Set-Content -LiteralPath (Join-Path $stubDir 'pi.cmd') -Value "@echo pi 0.0.0-stub"
+} else {
+    $stubPi = Join-Path $stubDir 'pi'
+    Set-Content -LiteralPath $stubPi -Value "#!/bin/sh`necho pi 0.0.0-stub"
+    & chmod +x $stubPi
+}
+$env:PATH = $stubDir + [System.IO.Path]::PathSeparator + $origPath
 function Check([bool]$ok, [string]$msg) { if (-not $ok) { Write-Host "FAIL: $msg" -ForegroundColor Red; $script:failed++ } else { Write-Host "ok: $msg" } }
 
 try {
@@ -47,6 +60,7 @@ try {
     # .dotnet is runtime state pwsh itself creates under TMPDIR; not a script leak
     Check (-not (Get-ChildItem -LiteralPath $tmp -Force | Where-Object Name -ne '.dotnet')) "no temp leftovers in TEMP"
 } finally {
+    $env:PATH = $origPath
     if ($sandbox -like '*pi-backup-ps-test-*') { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($failed) { Write-Host "$failed check(s) failed" -ForegroundColor Red; exit 1 }
