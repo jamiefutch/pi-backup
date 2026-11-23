@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.13
+
+### Fixed
+- `CHANGELOG.md` is now published with the package, so Pi can show "Extension Updates" after an upgrade.
+- The `@earendil-works/pi-coding-agent` peer dependency range is now `*`, as the Pi package docs require for host-provided packages.
+
 ## 1.1.12
 
 ### Fixed
