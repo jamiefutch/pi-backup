@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+- Backups include the memory database (`pi-hermes-memory/sessions.db`), taken with `sqlite3 .backup` so changes still in the WAL file are kept. Restore clears stale `-wal`/`-shm`/`-journal` files before putting the database back.
+- Backups include memory skills (`pi-hermes-memory/skills/`) and the skill-migration marker.
+- Backups include extension state: `missions/`, `extensions/`, `anti-stall.json`, `crashes.json`, `run-history.jsonl`, `models-store.json`, `pi-subagents/last-seen-version.json`.
+- Opt-in items, each set with an environment variable: `PI_BACKUP_INCLUDE_SESSIONS=1` (session history), `PI_BACKUP_INCLUDE_GIT=1` (cloned git packages), `PI_BACKUP_INCLUDE_BIN=1` (bundled binaries).
+- The manifest supports `sqlite|` and `optional|ENV|` entries, read by the bash and PowerShell scripts.
+
 ## 1.1.13
 
 ### Fixed
