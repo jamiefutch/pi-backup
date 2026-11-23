@@ -123,11 +123,38 @@ backup_auth() {
   fi
 }
 
+# SQLite databases use WAL, so a plain copy can miss committed data. sqlite3's .backup
+# reads through the WAL and writes a consistent snapshot.
+backup_sqlite() {
+  local src="$1" dst="$2"
+  if [[ ! -f "$src" ]]; then
+    warn "  ${dst#"$BACKUP_DIR"/} — not found, skipping"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dst")"
+  if command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 "$src" ".timeout 5000" ".backup '$dst'" || { err "  sqlite3 failed to back up ${src}"; return 1; }
+    ok "  ${dst#"$BACKUP_DIR"/} (sqlite3 snapshot)"
+  else
+    warn "  sqlite3 not found: copying ${src##*/} directly. Changes not yet checkpointed may be missing; install sqlite3 or quit Pi first."
+    cp -a "$src" "$dst"
+    ok "  ${dst#"$BACKUP_DIR"/}"
+  fi
+}
+
 backup_manifest_entries() {
-  local total step=0 kind f1 f2 f3
+  local total step=0 kind f1 f2 f3 f4 gate
   total="$(grep -c '^section|' "$MANIFEST_FILE" || true)"
-  while IFS='|' read -r kind f1 f2 f3 || [[ -n "$kind" ]]; do
-    kind="$(strip_cr "$kind")"; f1="$(strip_cr "${f1:-}")"; f2="$(strip_cr "${f2:-}")"; f3="$(strip_cr "${f3:-}")"
+  while IFS='|' read -r kind f1 f2 f3 f4 || [[ -n "$kind" ]]; do
+    kind="$(strip_cr "$kind")"; f1="$(strip_cr "${f1:-}")"; f2="$(strip_cr "${f2:-}")"; f3="$(strip_cr "${f3:-}")"; f4="$(strip_cr "${f4:-}")"
+    # optional|ENV|kind|pi path|backup path: shift the fields left, skip unless ENV=1
+    if [[ "$kind" == optional ]]; then
+      gate="$f1"; kind="$f2"; f1="$f3"; f2="$f4"; f3=""; f4=""
+      if [[ "${!gate:-0}" != "1" ]]; then
+        log "  $f1 — optional, not included (set $gate=1 to include)"
+        continue
+      fi
+    fi
     case "$kind" in
       ''|'#'*) continue ;;
       section)
@@ -135,6 +162,8 @@ backup_manifest_entries() {
       file)
         if [[ "$f2" == "auth.json" ]]; then backup_auth "$PI_ROOT/$f1" "$BACKUP_DIR/$f2"
         else copy_if_exists "$PI_ROOT/$f1" "$BACKUP_DIR/$f2"; fi ;;
+      sqlite)
+        backup_sqlite "$PI_ROOT/$f1" "$BACKUP_DIR/$f2" ;;
       dir)
         copy_dir_if_exists "$PI_ROOT/$f1" "$BACKUP_DIR/$f2" ;;
       dir-each)

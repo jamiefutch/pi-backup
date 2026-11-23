@@ -737,11 +737,19 @@ PI_BACKUP_ASSUME_YES=1 ./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000
 ✅ Local extension source code (pi-timeout, pi-chunk, etc.)
 ✅ npm manifests (package.json, lockfiles)
 ✅ Hermes memory files (MEMORY.md, USER.md, failures.md)
+✅ Memory database (sessions.db, snapshotted with sqlite3) and memory skills
+✅ Extension state (missions, extensions, anti-stall, models-store, run-history)
 ✅ Recent hermes-cleanup backups
+
+## Optional (set to 1 to include)
+
+🔸 Session history (\`PI_BACKUP_INCLUDE_SESSIONS=1\`, large)
+🔸 Cloned git packages (\`PI_BACKUP_INCLUDE_GIT=1\`)
+🔸 Bundled binaries (\`PI_BACKUP_INCLUDE_BIN=1\`)
 
 ## What Does NOT Get Backed Up (Regeneratable)
 
-❌ Sessions (\`~/.pi/agent/sessions/\`)
+❌ Sessions, unless \`PI_BACKUP_INCLUDE_SESSIONS=1\` (\`~/.pi/agent/sessions/\`)
 ❌ Context-mode KB (\`context-mode/kb.sqlite\`)
 ❌ node_modules/
 ❌ loop-police-detections.jsonl

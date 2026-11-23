@@ -216,6 +216,11 @@ The list lives in one file, [`backup-manifest.txt`](backup-manifest.txt), read b
 | **Local extension source** | `$LOCAL_EXT_ROOT/pi-timeout/`, `pi-chunk/`, `pi-hermes-memory-cleanup/`, `pi-context-docs/` (defaults to `~/projects/`; `node_modules`, `dist`, `build`, `.git`, `coverage` and `*.log` are skipped) |
 | **npm manifests** | `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml` from `~/.pi/agent/npm/` (never `node_modules`) |
 | **Hermes memory (active)** | `MEMORY.md`, `USER.md`, `failures.md`, `retired-failures.md`, `retired-memory.md` |
+| **Memory database & skills** | `sessions.db` in `~/.pi/agent/pi-hermes-memory/` (copied with `sqlite3 .backup`, so WAL changes are included), `~/.pi/agent/pi-hermes-memory/skills/`, `.skills-migrated-to-extension-storage` |
+| **Extension state** | `pi-subagents/last-seen-version.json`, `anti-stall.json`, `crashes.json`, `run-history.jsonl`, `models-store.json`, `~/.pi/agent/missions/`, `~/.pi/agent/extensions/` |
+| **Optional: sessions** | `~/.pi/agent/sessions/` (151 MB or more). Set `PI_BACKUP_INCLUDE_SESSIONS=1` |
+| **Optional: git packages** | `~/.pi/agent/git/` (cloned git packages). Set `PI_BACKUP_INCLUDE_GIT=1` |
+| **Optional: bin** | `~/.pi/agent/bin/` (bundled binaries such as `fd`). Set `PI_BACKUP_INCLUDE_BIN=1` |
 | **Cleanup backups** | Last 5 timestamped (`20*`) directories from `~/.pi/agent/hermes-cleanup/` |
 
 Example output of `./backup-pi.sh` (captured from a real run, abridged):
@@ -255,7 +260,7 @@ An internal backup (`KEEP_UNCOMPRESSED=1`, what the TUI's **Create internal back
 
 | Excluded | Why |
 |----------|-----|
-| `~/.pi/agent/sessions/` | Session history — regenerated |
+| `~/.pi/agent/sessions/` | Session history — regenerated. Include it with `PI_BACKUP_INCLUDE_SESSIONS=1` |
 | `~/.pi/agent/context-mode/kb.sqlite` | Knowledge base — rebuilt from indexed sources |
 | `~/.pi/agent/npm/node_modules/` | Dependencies — reinstalled via `npm install` |
 | `~/.pi/agent/loop-police-detections.jsonl` | Detection logs — regenerated |
@@ -342,12 +347,18 @@ If the default directory already contains backups, it is treated as configured a
 | `KEEP_UNCOMPRESSED` | `0` | `1` makes a plain, uncompressed staging directory and skips compression (no `zip`/7-Zip needed); the TUI sets this for internal backups. With `0` the staging directory is compressed and removed |
 | `PI_BACKUP_ASSUME_YES` | unset | Set to `1` to skip the restore confirmation prompt (scripted use). Without it, restore needs an interactive terminal and exits with a clear message otherwise |
 | `PI_BACKUP_EXCLUDE_AUTH` | unset | Set to `1` to leave `auth.json` (API credentials) out of the backup |
+| `PI_BACKUP_INCLUDE_SESSIONS` | unset | Set to `1` to include `~/.pi/agent/sessions/` (session history; large) |
+| `PI_BACKUP_INCLUDE_GIT` | unset | Set to `1` to include `~/.pi/agent/git/` (cloned git packages) |
+| `PI_BACKUP_INCLUDE_BIN` | unset | Set to `1` to include `~/.pi/agent/bin/` (bundled binaries) |
 | `KEEP_OLD` | unset | Set to `1` to keep `~/.pi.pre-reinstall-<timestamp>` after a successful clean reinstall |
 | `PKG_MANAGER` | `bun` | Package manager used by the clean-reinstall scripts (`bun`, `npm`, etc.) |
 
 ```bash
 # Custom locations
 PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ./backup-pi.sh
+
+# Include session history and cloned git packages
+PI_BACKUP_INCLUDE_SESSIONS=1 PI_BACKUP_INCLUDE_GIT=1 ./backup-pi.sh
 ```
 
 ---

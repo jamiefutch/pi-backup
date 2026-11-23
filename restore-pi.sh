@@ -157,11 +157,30 @@ restore_dir() {
   fi
 }
 
+# Restores a SQLite database. Stale -wal/-shm/-journal files next to the destination
+# would be applied to the restored file, so they are removed first.
+restore_sqlite() {
+  local src="$1" dst="$2"
+  if [[ -f "$src" ]]; then
+    mkdir -p "$(dirname "$dst")"
+    rm -f "$dst-wal" "$dst-shm" "$dst-journal"
+    cp "$src" "$dst"
+    ok "  ${src#"$BACKUP_DIR"/}"
+  else
+    warn "  ${src#"$BACKUP_DIR"/} — not in backup, skipping"
+  fi
+}
+
 restore_manifest_entries() {
-  local total step=0 kind f1 f2 f3
+  local total step=0 kind f1 f2 f3 f4 gate
   total="$(grep -c '^section|' "$MANIFEST_FILE" || true)"
-  while IFS='|' read -r kind f1 f2 f3 || [[ -n "$kind" ]]; do
-    kind="$(strip_cr "$kind")"; f1="$(strip_cr "${f1:-}")"; f2="$(strip_cr "${f2:-}")"; f3="$(strip_cr "${f3:-}")"
+  while IFS='|' read -r kind f1 f2 f3 f4 || [[ -n "$kind" ]]; do
+    kind="$(strip_cr "$kind")"; f1="$(strip_cr "${f1:-}")"; f2="$(strip_cr "${f2:-}")"; f3="$(strip_cr "${f3:-}")"; f4="$(strip_cr "${f4:-}")"
+    # optional|ENV|kind|pi path|backup path: restore it only if the backup holds it, silently otherwise.
+    if [[ "$kind" == optional ]]; then
+      kind="$f2"; f1="$f3"; f2="$f4"; f3=""; f4=""
+      [[ -e "$BACKUP_DIR/$f2" ]] || continue
+    fi
     case "$kind" in
       ''|'#'*) continue ;;
       section)
@@ -170,6 +189,8 @@ restore_manifest_entries() {
         restore_file "$BACKUP_DIR/$f2" "$PI_ROOT/$f1"
         # Credentials: keep a restored auth.json private to this user
         if [[ "$f2" == "auth.json" && -f "$BACKUP_DIR/$f2" && -f "$PI_ROOT/$f1" ]]; then chmod 600 "$PI_ROOT/$f1"; fi ;;
+      sqlite)
+        restore_sqlite "$BACKUP_DIR/$f2" "$PI_ROOT/$f1" ;;
       dir)
         restore_dir "$BACKUP_DIR/$f2" "$PI_ROOT/$f1" ;;
       dir-each|recent)

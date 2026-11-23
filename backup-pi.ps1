@@ -42,12 +42,19 @@ function Read-Manifest([string]$path) {
         $l = $line.TrimEnd("`r")
         if ($l -eq '' -or $l.StartsWith('#')) { continue }
         $p = $l.Split('|')
-        [pscustomobject]@{
+        $e = [pscustomobject]@{
             Kind = $p[0]
             A    = if ($p.Count -gt 1) { $p[1] } else { '' }
             B    = if ($p.Count -gt 2) { $p[2] } else { '' }
             C    = if ($p.Count -gt 3) { $p[3] } else { '' }
+            D    = if ($p.Count -gt 4) { $p[4] } else { '' }
+            Gate = ''
         }
+        # optional|ENV|kind|pi path|backup path: shift the fields left and remember the gate variable
+        if ($e.Kind -eq 'optional') {
+            $e = [pscustomobject]@{ Kind = $e.B; A = $e.C; B = $e.D; C = ''; D = ''; Gate = $e.A }
+        }
+        $e
     }
 }
 
@@ -93,6 +100,23 @@ function Copy-IfExists([string]$src, [string]$dst) {
         OK "  $(Get-RelativeLabel $dst)"
     } else {
         Warn "  $(Get-RelativeLabel $dst) - not found, skipping"
+    }
+}
+
+# SQLite databases use WAL, so a plain copy can miss committed data. sqlite3's .backup
+# reads through the WAL and writes a consistent snapshot.
+function Backup-Sqlite([string]$src, [string]$dst) {
+    if (-not (Test-Path -LiteralPath $src)) { Warn "  $(Get-RelativeLabel $dst) - not found, skipping"; return }
+    $dstDir = Split-Path $dst -Parent
+    if (!(Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+    if (Get-Command sqlite3 -ErrorAction SilentlyContinue) {
+        & sqlite3 $src '.timeout 5000' ".backup '$dst'"
+        if ($LASTEXITCODE -ne 0) { throw "sqlite3 failed to back up $src" }
+        OK "  $(Get-RelativeLabel $dst) (sqlite3 snapshot)"
+    } else {
+        Warn "  sqlite3 not found: copying $([System.IO.Path]::GetFileName($src)) directly. Changes not yet checkpointed may be missing; install sqlite3 or quit Pi first."
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+        OK "  $(Get-RelativeLabel $dst)"
     }
 }
 
@@ -153,8 +177,13 @@ $entries = @(Read-Manifest $ManifestFile)
 $total = @($entries | Where-Object { $_.Kind -eq 'section' }).Count
 $step = 0
 foreach ($e in $entries) {
+    if ($e.Gate -and [Environment]::GetEnvironmentVariable($e.Gate) -ne '1') {
+        Log "  $($e.A) - optional, not included (set $($e.Gate)=1 to include)"
+        continue
+    }
     switch ($e.Kind) {
         'section' { $step++; Log "$step/$total  $($e.A)..." }
+        'sqlite' { Backup-Sqlite (P $PiRoot $e.A) (P $ArchiveDir $e.B) }
         'file' {
             if ($e.B -eq 'auth.json') { Backup-Auth (P $PiRoot $e.A) (P $ArchiveDir $e.B) }
             else { Copy-IfExists (P $PiRoot $e.A) (P $ArchiveDir $e.B) }
