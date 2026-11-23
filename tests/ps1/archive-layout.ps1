@@ -44,7 +44,8 @@ try {
     & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'restore-pi.ps1') $archive.FullName | Out-Null
     Check ($LASTEXITCODE -eq 0) "restore-pi.ps1 exits 0"
     Check (Test-Path -LiteralPath (Join-Path $pi 'agent\skills\demo\SKILL.md')) "restore brought the skill back"
-    Check (-not (Get-ChildItem -LiteralPath $tmp -Force)) "no temp leftovers in TEMP"
+    # .dotnet is runtime state pwsh itself creates under TMPDIR; not a script leak
+    Check (-not (Get-ChildItem -LiteralPath $tmp -Force | Where-Object Name -ne '.dotnet')) "no temp leftovers in TEMP"
 } finally {
     if ($sandbox -like '*pi-backup-ps-test-*') { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
 }
