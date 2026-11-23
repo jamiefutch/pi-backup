@@ -9,7 +9,7 @@
 
 # ── Backup data (large) ───────────────────────────────────
 # The actual backup archives are stored separately
-# (default: ~/projects/personal/pi-utils/backups), but ignore
+# (default: ~/pi-backups), but ignore
 # any local copies so they are never committed.
 backups/
 *.7z
@@ -19,7 +19,6 @@ backups/
 node_modules/
 npm-debug.log*
 yarn-error.log*
-package-lock.json
 
 # ── Logs ──────────────────────────────────────────────────
 *.log

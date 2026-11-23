@@ -6,6 +6,7 @@ set -euo pipefail
 
 # ─── Config ──────────────────────────────────────────────────────
 PI_ROOT="${PI_ROOT:-$HOME/.pi}"
+LOCAL_EXT_ROOT="${LOCAL_EXT_ROOT:-$HOME/projects}"
 
 # ─── Colors ──────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -19,6 +20,19 @@ ok()    { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERR]${NC}  $*"; }
 
+# ─── Cleanup ─────────────────────────────────────────────────────
+# Registered before any temp dir is created, so every exit path (abort, error,
+# success) removes the extraction dir.
+STAGE=""
+cleanup() {
+  local rc=$?
+  if [[ -n "$STAGE" && -d "$STAGE" ]]; then
+    rm -rf "$STAGE"
+  fi
+  return $rc
+}
+trap cleanup EXIT
+
 # ─── Usage ───────────────────────────────────────────────────────
 usage() {
   cat <<EOF
@@ -27,9 +41,9 @@ Usage: $0 <backup-directory-or-archive>
 Restores a Pi backup created by backup-pi.sh
 
 Examples:
-  $0 ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
-  $0 ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000.7z
-  $0 ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000.zip
+  $0 ~/pi-backups/pi-backup-20260811-143000
+  $0 ~/pi-backups/pi-backup-20260811-143000.7z
+  $0 ~/pi-backups/pi-backup-20260811-143000.zip
 
 Accepts either an uncompressed backup directory or a compressed
 zip/7z archive (as produced by backup-pi.sh).
@@ -37,6 +51,9 @@ zip/7z archive (as produced by backup-pi.sh).
 Prerequisites:
   - Fresh Pi install completed (pi --version works)
   - Pi NOT running
+
+Environment:
+  PI_BACKUP_ASSUME_YES=1   Skip the confirmation prompt (for scripted use)
 EOF
   exit 1
 }
@@ -55,10 +72,10 @@ BACKUP_ARG="$1"
 if [[ -d "$BACKUP_ARG" ]]; then
   # Uncompressed directory backup
   BACKUP_DIR="$BACKUP_ARG"
-  STAGE=""
 elif [[ -f "$BACKUP_ARG" && "$BACKUP_ARG" =~ \.(zip|7z)$ ]]; then
   # Compressed archive: extract to a temp dir first
-  STAGE="$(mktemp -d)"
+  # Explicit template: BSD mktemp ignores $TMPDIR when called without one.
+  STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pi-restore.XXXXXX")"
   log "Extracting archive: $BACKUP_ARG"
   tool="$(pick_extract_tool)"
   if [[ -n "$tool" ]]; then
@@ -70,7 +87,7 @@ elif [[ -f "$BACKUP_ARG" && "$BACKUP_ARG" =~ \.(zip|7z)$ ]]; then
   fi
   # The archive holds one top-level pi-backup-* dir
   BACKUP_DIR="$(find "$STAGE" -mindepth 1 -maxdepth 1 -type d | head -1)"
-  [[ -n "$BACKUP_DIR" ]] || { err "No backup directory found inside archive."; rm -rf "$STAGE"; exit 1; }
+  [[ -n "$BACKUP_DIR" ]] || { err "No backup directory found inside archive."; exit 1; }
   log "Extracted to: $BACKUP_DIR"
 else
   err "Backup not found: $BACKUP_ARG (need a directory, .zip, or .7z)"
@@ -87,20 +104,44 @@ warn "This will OVERWRITE all current Pi configuration."
 warn "Backup source: $BACKUP_DIR"
 warn "Target:        $PI_ROOT"
 warn "Pi must NOT be running."
+
+# Best-effort running-Pi check. It only warns: process names are unreliable.
+if command -v pgrep >/dev/null 2>&1 && { pgrep -x pi >/dev/null 2>&1 || pgrep -f 'pi-coding-agent' >/dev/null 2>&1; }; then
+  warn "A Pi process appears to be running. Exit Pi first: files restored under a"
+  warn "running Pi can be overwritten or corrupted when it exits."
+fi
 echo
-read -rp "Continue? [y/N] " -n 1
-echo
-[[ $REPLY =~ ^[Yy]$ ]] || { log "Aborted."; exit 0; }
+
+if [[ "${PI_BACKUP_ASSUME_YES:-0}" == "1" ]]; then
+  log "PI_BACKUP_ASSUME_YES=1 set; skipping confirmation."
+else
+  REPLY=""
+  if ! read -rp "Continue? [y/N] " -n 1 REPLY; then
+    echo
+    err "Cannot read a confirmation (stdin is not interactive)."
+    err "Run this in a terminal, or set PI_BACKUP_ASSUME_YES=1 to skip the prompt."
+    exit 1
+  fi
+  echo
+  [[ $REPLY =~ ^[Yy]$ ]] || { log "Aborted."; exit 0; }
+fi
+
+# ─── Manifest ────────────────────────────────────────────────────
+# What gets restored is defined once, in backup-manifest.txt (shared with backup).
+MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backup-manifest.txt"
+[[ -f "$MANIFEST_FILE" ]] || { err "backup-manifest.txt not found next to $0"; exit 1; }
 
 # ─── Helpers ─────────────────────────────────────────────────────
+strip_cr() { printf '%s' "${1%$'\r'}"; }
+
 restore_file() {
   local src="$1" dst="$2"
   if [[ -f "$src" ]]; then
     mkdir -p "$(dirname "$dst")"
     cp "$src" "$dst"
-    ok "  $(basename "$src")"
+    ok "  ${src#"$BACKUP_DIR"/}"
   else
-    warn "  $(basename "$src") — not in backup, skipping"
+    warn "  ${src#"$BACKUP_DIR"/} — not in backup, skipping"
   fi
 }
 
@@ -116,6 +157,54 @@ restore_dir() {
   fi
 }
 
+restore_manifest_entries() {
+  local total step=0 kind f1 f2 f3
+  total="$(grep -c '^section|' "$MANIFEST_FILE" || true)"
+  while IFS='|' read -r kind f1 f2 f3 || [[ -n "$kind" ]]; do
+    kind="$(strip_cr "$kind")"; f1="$(strip_cr "${f1:-}")"; f2="$(strip_cr "${f2:-}")"; f3="$(strip_cr "${f3:-}")"
+    case "$kind" in
+      ''|'#'*) continue ;;
+      section)
+        step=$((step+1)); log "$step/$total  $f1..." ;;
+      file)
+        restore_file "$BACKUP_DIR/$f2" "$PI_ROOT/$f1"
+        # Credentials: keep a restored auth.json private to this user
+        if [[ "$f2" == "auth.json" && -f "$BACKUP_DIR/$f2" && -f "$PI_ROOT/$f1" ]]; then chmod 600 "$PI_ROOT/$f1"; fi ;;
+      dir)
+        restore_dir "$BACKUP_DIR/$f2" "$PI_ROOT/$f1" ;;
+      dir-each|recent)
+        if [[ -d "$BACKUP_DIR/$f2" ]]; then
+          local sub name
+          for sub in "$BACKUP_DIR/$f2"/*/; do
+            [[ -d "$sub" ]] || continue
+            name="$(basename "$sub")"
+            restore_dir "$sub" "$PI_ROOT/$f1/$name"
+          done
+          ok "  $f2/ restored"
+        else
+          warn "  No $f2 in backup"
+        fi ;;
+      local-ext)
+        if [[ -d "$BACKUP_DIR/local-extensions/$f1" ]]; then
+          mkdir -p "$LOCAL_EXT_ROOT/$f1"
+          cp -a "$BACKUP_DIR/local-extensions/$f1/." "$LOCAL_EXT_ROOT/$f1/"
+          ok "  $f1/ restored"
+        else
+          warn "  $f1 — not in backup, skipping"
+        fi ;;
+      npm)
+        if [[ -d "$BACKUP_DIR/$f2" ]]; then
+          mkdir -p "$PI_ROOT/$f1"
+          cp -a "$BACKUP_DIR/$f2/." "$PI_ROOT/$f1/"
+          ok "  npm manifests restored (run 'npm install' or 'bun install' to reinstall deps)"
+        else
+          warn "  No npm manifests in backup"
+        fi ;;
+      *) warn "Unknown manifest entry type: $kind" ;;
+    esac
+  done < "$MANIFEST_FILE"
+}
+
 # ─── Main ────────────────────────────────────────────────────────
 main() {
   log "════════════════════════════════════════════════════════════"
@@ -123,95 +212,7 @@ main() {
   log "════════════════════════════════════════════════════════════"
   echo
 
-  # ── 1. Core Config Files ──────────────────────────────────────
-  log "1/8  Core configuration files..."
-  restore_file "$BACKUP_DIR/settings.json"              "$PI_ROOT/agent/settings.json"
-  restore_file "$BACKUP_DIR/auth.json"                  "$PI_ROOT/agent/auth.json"
-  restore_file "$BACKUP_DIR/models.json"                "$PI_ROOT/agent/models.json"
-  restore_file "$BACKUP_DIR/trust.json"                 "$PI_ROOT/agent/trust.json"
-  restore_file "$BACKUP_DIR/keybindings.json"           "$PI_ROOT/agent/keybindings.json"
-  restore_file "$BACKUP_DIR/pix.json"                   "$PI_ROOT/agent/pix.json"
-  restore_file "$BACKUP_DIR/optimizer.json"             "$PI_ROOT/agent/optimizer.json"
-  restore_file "$BACKUP_DIR/lmstudio.json.bak"          "$PI_ROOT/agent/lmstudio.json.bak"
-  restore_file "$BACKUP_DIR/hermes-memory-config.json"  "$PI_ROOT/agent/hermes-memory-config.json"
-  restore_file "$BACKUP_DIR/pi.code-workspace"          "$PI_ROOT/agent/pi.code-workspace"
-
-  # ── 2. Extension Configs ──────────────────────────────────────
-  log "2/8  Extension configurations..."
-  restore_file "$BACKUP_DIR/pi-hermes-memory-cleanup/scoped-memory.json" \
-    "$PI_ROOT/agent/pi-hermes-memory-cleanup/scoped-memory.json"
-  restore_file "$BACKUP_DIR/loop-police.json"           "$PI_ROOT/agent/loop-police.json"
-  restore_file "$BACKUP_DIR/pi-rtk/config.json"         "$PI_ROOT/agent/pi-rtk/config.json"
-  restore_file "$BACKUP_DIR/context-mode/config.json"   "$PI_ROOT/agent/context-mode/config.json"
-  restore_file "$BACKUP_DIR/pi-timeout/config.json"     "$PI_ROOT/agent/pi-timeout/config.json"
-  restore_file "$BACKUP_DIR/pi-context-viewer/config.json" "$PI_ROOT/agent/pi-context-viewer/config.json"
-  restore_file "$BACKUP_DIR/pix-optimizer/config.json"  "$PI_ROOT/agent/pix-optimizer/config.json"
-  restore_file "$BACKUP_DIR/pi-nvidia-nim/config.json"  "$PI_ROOT/agent/pi-nvidia-nim/config.json"
-
-  # ── 3. Global Skills ──────────────────────────────────────────
-  log "3/8  Global skills..."
-  restore_dir "$BACKUP_DIR/skills"                      "$PI_ROOT/agent/skills"
-
-  # ── 4. Project Skills & Memory ────────────────────────────────
-  log "4/8  Project skills & memory..."
-  if [[ -d "$BACKUP_DIR/projects-memory" ]]; then
-    for proj in "$BACKUP_DIR/projects-memory"/*/; do
-      [[ -d "$proj" ]] || continue
-      name="$(basename "$proj")"
-      restore_dir "$proj" "$PI_ROOT/agent/projects-memory/$name"
-    done
-    ok "  projects-memory/ restored"
-  else
-    warn "  No project memory in backup"
-  fi
-
-  # ── 5. Local Extensions ───────────────────────────────────────
-  log "5/8  Local extension source code..."
-  if [[ -d "$BACKUP_DIR/local-extensions" ]]; then
-    for ext in "$BACKUP_DIR/local-extensions"/*/; do
-      [[ -d "$ext" ]] || continue
-      name="$(basename "$ext")"
-      mkdir -p "$HOME/projects/personal/$name"
-      rsync -a "$ext/" "$HOME/projects/personal/$name/"
-      ok "  $name/ restored"
-    done
-  else
-    warn "  No local extensions in backup"
-  fi
-
-  # ── 6. npm Extension Manifests ────────────────────────────────
-  log "6/8  npm extension manifests..."
-  if [[ -d "$BACKUP_DIR/npm-manifests" ]]; then
-    mkdir -p "$PI_ROOT/agent/npm"
-    cp -a "$BACKUP_DIR/npm-manifests/"* "$PI_ROOT/agent/npm/" 2>/dev/null || true
-    ok "  npm manifests restored (run 'npm install' or 'bun install' to reinstall deps)"
-  else
-    warn "  No npm manifests in backup"
-  fi
-
-  # ── 7. Hermes Memory ──────────────────────────────────────────
-  log "7/8  Hermes memory (active files)..."
-  if [[ -d "$BACKUP_DIR/pi-hermes-memory" ]]; then
-    mkdir -p "$PI_ROOT/agent/pi-hermes-memory"
-    for f in MEMORY.md USER.md failures.md retired-failures.md retired-memory.md; do
-      restore_file "$BACKUP_DIR/pi-hermes-memory/$f" "$PI_ROOT/agent/pi-hermes-memory/$f"
-    done
-  else
-    warn "  No Hermes memory in backup"
-  fi
-
-  # ── 8. Cleanup Backups ────────────────────────────────────────
-  log "8/8  Hermes-cleanup backups..."
-  if [[ -d "$BACKUP_DIR/hermes-cleanup" ]]; then
-    mkdir -p "$PI_ROOT/agent/hermes-cleanup"
-    for d in "$BACKUP_DIR/hermes-cleanup"/*/; do
-      [[ -d "$d" ]] || continue
-      name="$(basename "$d")"
-      restore_dir "$d" "$PI_ROOT/agent/hermes-cleanup/$name"
-    done
-  else
-    warn "  No cleanup backups in backup"
-  fi
+  restore_manifest_entries
 
   # ── Verify ────────────────────────────────────────────────────
   echo
@@ -231,9 +232,3 @@ main() {
 }
 
 main "$@"
-
-# ─── Cleanup ────────────────────────────────────────────────────
-if [[ -n "${STAGE:-}" && -d "$STAGE" ]]; then
-  rm -rf "$STAGE"
-  log "Removed temp extraction dir."
-fi

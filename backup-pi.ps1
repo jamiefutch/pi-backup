@@ -15,7 +15,8 @@ $ErrorActionPreference = 'Stop'
 
 # ─── Config ────────────────────────────────────────────────
 $PiRoot   = if ($env:PI_ROOT)    { $env:PI_ROOT }    else { Join-Path $HOME '.pi' }
-$BackupRoot = if ($env:BACKUP_ROOT) { $env:BACKUP_ROOT } else { Join-Path $HOME 'projects\personal\pi-utils\backups' }
+$BackupRoot = if ($env:BACKUP_ROOT) { $env:BACKUP_ROOT } else { Join-Path $HOME 'pi-backups' }
+$LocalExtRoot = if ($env:LOCAL_EXT_ROOT) { $env:LOCAL_EXT_ROOT } else { Join-Path $HOME 'projects' }
 $Timestamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
 $ArchiveBase = "pi-backup-$Timestamp"
 $ArchiveDir  = Join-Path $BackupRoot $ArchiveBase
@@ -28,14 +29,70 @@ function OK   { Write-Host "[OK]    $args"     -ForegroundColor Green }
 function Warn { Write-Host "[WARN]  $args"     -ForegroundColor Yellow }
 function Err  { Write-Host "[ERR]   $args"     -ForegroundColor Red; exit 1 }
 
+# ─── Manifest ──────────────────────────────────────────────
+# What gets backed up / restored is defined once, in backup-manifest.txt (shared with the bash scripts).
+$ManifestFile = Join-Path $PSScriptRoot 'backup-manifest.txt'
+if (-not (Test-Path -LiteralPath $ManifestFile)) {
+    Write-Host "[ERR]   backup-manifest.txt not found next to this script" -ForegroundColor Red
+    exit 1
+}
+
+function Read-Manifest([string]$path) {
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        $l = $line.TrimEnd("`r")
+        if ($l -eq '' -or $l.StartsWith('#')) { continue }
+        $p = $l.Split('|')
+        [pscustomobject]@{
+            Kind = $p[0]
+            A    = if ($p.Count -gt 1) { $p[1] } else { '' }
+            B    = if ($p.Count -gt 2) { $p[2] } else { '' }
+            C    = if ($p.Count -gt 3) { $p[3] } else { '' }
+        }
+    }
+}
+
+# Manifest paths use "/"; join them under a root with the platform separator.
+function P([string]$root, [string]$rel) {
+    Join-Path $root ($rel.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+}
+
+
+# Restrict a path to the current user on Unix (no-op on Windows, where ACLs apply).
+function Set-PrivateMode([string]$path, [bool]$isDir = $false) {
+    if ($IsWindows -or $env:OS -eq 'Windows_NT') { return }
+    try {
+        $mode = if ($isDir) { 'UserRead,UserWrite,UserExecute' } else { 'UserRead,UserWrite' }
+        [System.IO.File]::SetUnixFileMode($path, [System.IO.UnixFileMode]$mode)
+    } catch { Warn "  could not restrict permissions on ${path}: $($_.Exception.Message)" }
+}
+
+function Get-RelativeLabel([string]$path) {
+    if ($path.StartsWith($ArchiveDir)) { return $path.Substring($ArchiveDir.Length).TrimStart('\','/').Replace('\','/') }
+    return [System.IO.Path]::GetFileName($path)
+}
+
+# auth.json holds credentials: optionally excluded, always private, always flagged.
+function Backup-Auth([string]$src, [string]$dst) {
+    if ($env:PI_BACKUP_EXCLUDE_AUTH -eq '1') {
+        Warn "  auth.json - excluded (PI_BACKUP_EXCLUDE_AUTH=1)"
+        return
+    }
+    Copy-IfExists $src $dst
+    if (Test-Path -LiteralPath $dst) {
+        Set-PrivateMode $dst
+        Warn "  auth.json holds your API credentials and is included in this backup."
+        Warn "  Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out."
+    }
+}
+
 function Copy-IfExists([string]$src, [string]$dst) {
     if (Test-Path -LiteralPath $src) {
         $dstDir = Split-Path $dst -Parent
         if (!(Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
         Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
-        OK "  $([System.IO.Path]::GetFileName($src))"
+        OK "  $(Get-RelativeLabel $dst)"
     } else {
-        Warn "  $([System.IO.Path]::GetFileName($src)) - not found, skipping"
+        Warn "  $(Get-RelativeLabel $dst) - not found, skipping"
     }
 }
 
@@ -59,20 +116,29 @@ function Copy-Tree([string]$src, [string]$dst, [string[]]$excludeDirs = @(), [st
         $robocopyArgs += @('/NFL','/NDL','/NJH','/NJS')
         & robocopy @robocopyArgs | Out-Null
     } else {
-        # Fallback: manual recursive copy with exclusions
-        Get-ChildItem -LiteralPath $src | ForEach-Object {
+        # Fallback without robocopy: recurse so existing destination dirs are merged, not nested.
+        Get-ChildItem -LiteralPath $src -Force | ForEach-Object {
             $item = $_
             $skip = $false
             if ($item.PSIsContainer -and $item.Name -in $excludeDirs) { $skip = $true }
             if (-not $item.PSIsContainer -and ($excludeFiles | Where-Object { $item.Name -like $_ })) { $skip = $true }
             if (-not $skip) {
-                Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $dst $item.Name) -Recurse -Force
+                $target = Join-Path $dst $item.Name
+                if ($item.PSIsContainer) { Copy-Tree $item.FullName $target $excludeDirs $excludeFiles }
+                else { Copy-Item -LiteralPath $item.FullName -Destination $target -Force }
             }
         }
     }
 }
 
+# A half-built staging dir (or partial archive) is removed if the script fails.
+# A successful run, or a failed compression (staging is intact), keeps it.
+$Completed = $false
+$KeepStagingOnFail = $false
+$archivePath = $null
+try {
 New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null
+Set-PrivateMode $ArchiveDir $true
 
 Write-Host ""
 Log "================================================================"
@@ -82,109 +148,81 @@ Log "Source:      $PiRoot"
 Log "Destination: $ArchiveDir"
 Write-Host ""
 
-# ── 1. Core Config Files ──────────────────────────────────
-Log "1/8  Core configuration files..."
 $agentDir = Join-Path $PiRoot 'agent'
-Copy-IfExists (Join-Path $agentDir 'settings.json')           (Join-Path $ArchiveDir 'settings.json')
-Copy-IfExists (Join-Path $agentDir 'auth.json')               (Join-Path $ArchiveDir 'auth.json')
-Copy-IfExists (Join-Path $agentDir 'models.json')             (Join-Path $ArchiveDir 'models.json')
-Copy-IfExists (Join-Path $agentDir 'trust.json')              (Join-Path $ArchiveDir 'trust.json')
-Copy-IfExists (Join-Path $agentDir 'keybindings.json')        (Join-Path $ArchiveDir 'keybindings.json')
-Copy-IfExists (Join-Path $agentDir 'pix.json')                (Join-Path $ArchiveDir 'pix.json')
-Copy-IfExists (Join-Path $agentDir 'optimizer.json')          (Join-Path $ArchiveDir 'optimizer.json')
-Copy-IfExists (Join-Path $agentDir 'lmstudio.json.bak')       (Join-Path $ArchiveDir 'lmstudio.json.bak')
-Copy-IfExists (Join-Path $agentDir 'hermes-memory-config.json') (Join-Path $ArchiveDir 'hermes-memory-config.json')
-Copy-IfExists (Join-Path $agentDir 'pi.code-workspace')       (Join-Path $ArchiveDir 'pi.code-workspace')
-
-# ── 2. Extension Configs ──────────────────────────────────
-Log "2/8  Extension configurations..."
-Copy-IfExists (Join-Path $agentDir 'pi-hermes-memory-cleanup\scoped-memory.json') (Join-Path $ArchiveDir 'pi-hermes-memory-cleanup\scoped-memory.json')
-Copy-IfExists (Join-Path $agentDir 'loop-police.json')        (Join-Path $ArchiveDir 'loop-police.json')
-Copy-IfExists (Join-Path $agentDir 'pi-rtk\config.json')      (Join-Path $ArchiveDir 'pi-rtk\config.json')
-Copy-IfExists (Join-Path $agentDir 'context-mode\config.json') (Join-Path $ArchiveDir 'context-mode\config.json')
-Copy-IfExists (Join-Path $agentDir 'pi-timeout\config.json')  (Join-Path $ArchiveDir 'pi-timeout\config.json')
-Copy-IfExists (Join-Path $agentDir 'pi-context-viewer\config.json') (Join-Path $ArchiveDir 'pi-context-viewer\config.json')
-Copy-IfExists (Join-Path $agentDir 'pix-optimizer\config.json') (Join-Path $ArchiveDir 'pix-optimizer\config.json')
-Copy-IfExists (Join-Path $agentDir 'pi-nvidia-nim\config.json') (Join-Path $ArchiveDir 'pi-nvidia-nim\config.json')
-
-# ── 3. Global Skills ──────────────────────────────────────
-Log "3/8  Global skills..."
-Copy-DirIfExists (Join-Path $agentDir 'skills')              (Join-Path $ArchiveDir 'skills')
-
-# ── 4. Project Skills & Memory ────────────────────────────
-Log "4/8  Project skills & memory..."
-$projMem = Join-Path $agentDir 'projects-memory'
-if (Test-Path -LiteralPath $projMem) {
-    $projDst = Join-Path $ArchiveDir 'projects-memory'
-    Copy-DirIfExists $projMem $projDst
-    $count = @(Get-ChildItem -LiteralPath $projDst -Directory -ErrorAction SilentlyContinue).Count
-    OK "  projects-memory/ ($count projects)"
-} else {
-    Warn "  projects-memory/ - not found"
-}
-
-# ── 5. Local Extensions (source code only, no node_modules) ─
-Log "5/8  Local extension source code..."
-$localExts = @('pi-timeout', 'pi-chunk', 'pi-hermes-memory-cleanup', 'pi-context-docs')
-foreach ($ext in $localExts) {
-    $src = Join-Path $HOME "projects\personal\$ext"
-    if (Test-Path -LiteralPath $src) {
-        $dst = Join-Path $ArchiveDir "local-extensions\$ext"
-        $extDstDir = Join-Path $ArchiveDir 'local-extensions'
-        if (!(Test-Path -LiteralPath $extDstDir)) { New-Item -ItemType Directory -Path $extDstDir -Force | Out-Null }
-        # Copy source, exclude node_modules, dist, build, .git, coverage, logs
-        Copy-Tree $src $dst -excludeDirs @('node_modules','dist','build','coverage','.git') -excludeFiles @('*.log')
-        OK "  $ext/ (source only)"
-    } else {
-        Warn "  $ext - not found at ~/projects/personal/$ext"
+$entries = @(Read-Manifest $ManifestFile)
+$total = @($entries | Where-Object { $_.Kind -eq 'section' }).Count
+$step = 0
+foreach ($e in $entries) {
+    switch ($e.Kind) {
+        'section' { $step++; Log "$step/$total  $($e.A)..." }
+        'file' {
+            if ($e.B -eq 'auth.json') { Backup-Auth (P $PiRoot $e.A) (P $ArchiveDir $e.B) }
+            else { Copy-IfExists (P $PiRoot $e.A) (P $ArchiveDir $e.B) }
+        }
+        'dir' { Copy-DirIfExists (P $PiRoot $e.A) (P $ArchiveDir $e.B) }
+        'dir-each' {
+            $src = P $PiRoot $e.A
+            if (Test-Path -LiteralPath $src -PathType Container) {
+                $dst = P $ArchiveDir $e.B
+                New-Item -ItemType Directory -Path $dst -Force | Out-Null
+                foreach ($sub in Get-ChildItem -LiteralPath $src -Directory) {
+                    Copy-DirIfExists $sub.FullName (Join-Path $dst $sub.Name)
+                }
+                $count = @(Get-ChildItem -LiteralPath $dst -Directory -ErrorAction SilentlyContinue).Count
+                OK "  $($e.B)/ ($count projects)"
+            } else {
+                Warn "  $($e.B)/ - not found"
+            }
+        }
+        'local-ext' {
+            $src = Join-Path $LocalExtRoot $e.A
+            if (Test-Path -LiteralPath $src) {
+                $dst = P $ArchiveDir "local-extensions/$($e.A)"
+                Copy-Tree $src $dst -excludeDirs @('node_modules','dist','build','coverage','.git') -excludeFiles @('*.log')
+                OK "  $($e.A)/ (source only)"
+            } else {
+                Warn "  $($e.A) - not found at $LocalExtRoot/$($e.A)"
+            }
+        }
+        'npm' {
+            $src = P $PiRoot $e.A
+            if (Test-Path -LiteralPath $src -PathType Container) {
+                # Only package.json and lockfiles, never node_modules (depth matches the bash script)
+                $names = @('package.json','package-lock.json','npm-shrinkwrap.json','pnpm-lock.yaml')
+                $found = Get-ChildItem -LiteralPath $src -Recurse -Depth 2 -File -ErrorAction SilentlyContinue |
+                    Where-Object { $names -contains $_.Name -and $_.FullName -notmatch '[\\/]node_modules[\\/]' }
+                foreach ($m in $found) {
+                    $rel = $m.FullName.Substring($src.Length).TrimStart('\','/')
+                    $target = P $ArchiveDir "$($e.B)/$($rel.Replace('\','/'))"
+                    $targetDir = Split-Path $target -Parent
+                    if (!(Test-Path -LiteralPath $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+                    Copy-Item -LiteralPath $m.FullName -Destination $target -Force
+                }
+                OK "  npm manifests (package.json, lockfiles)"
+            } else {
+                Warn "  npm/ - not found"
+            }
+        }
+        'recent' {
+            $src = P $PiRoot $e.A
+            if (Test-Path -LiteralPath $src -PathType Container) {
+                $dst = P $ArchiveDir $e.B
+                New-Item -ItemType Directory -Path $dst -Force | Out-Null
+                $n = if ($e.C) { [int]$e.C } else { 5 }
+                $recent = Get-ChildItem -LiteralPath $src -Directory | Where-Object { $_.Name -like '20*' } | Sort-Object Name -Descending | Select-Object -First $n
+                foreach ($d in $recent) { Copy-DirIfExists $d.FullName (Join-Path $dst $d.Name) }
+            } else {
+                Warn "  $($e.A)/ - not found"
+            }
+        }
+        default { Warn "Unknown manifest entry type: $($e.Kind)" }
     }
-}
-
-# ── 6. npm Extension Manifests (package.json + lock) ─────
-Log "6/8  npm extension manifests..."
-$npmDir = Join-Path $agentDir 'npm'
-if (Test-Path -LiteralPath $npmDir) {
-    # Only copy package.json and lockfiles, not node_modules
-    $manifests = Get-ChildItem -LiteralPath $npmDir -Recurse -Depth 3 -Include @('package.json','package-lock.json','npm-shrinkwrap.json','pnpm-lock.yaml') -ErrorAction SilentlyContinue
-    foreach ($m in $manifests) {
-        $rel = $m.FullName.Substring($npmDir.Length).TrimStart('\')
-        $dstDir = Join-Path $ArchiveDir "npm-manifests\$($rel | Split-Path -Parent)"
-        if (!(Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
-        Copy-Item -LiteralPath $m.FullName -Destination (Join-Path $dstDir $m.Name) -Force
-    }
-    OK "  npm manifests (package.json, lockfiles)"
-} else {
-    Warn "  npm/ - not found"
-}
-
-# ── 7. Hermes Memory (active files only, not sessions DB) ─
-Log "7/8  Hermes memory (active files)..."
-$hermes = Join-Path $agentDir 'pi-hermes-memory'
-if (Test-Path -LiteralPath $hermes) {
-    $hermesDst = Join-Path $ArchiveDir 'pi-hermes-memory'
-    New-Item -ItemType Directory -Path $hermesDst -Force | Out-Null
-    foreach ($f in @('MEMORY.md','USER.md','failures.md','retired-failures.md','retired-memory.md')) {
-        Copy-IfExists (Join-Path $hermes $f) (Join-Path $hermesDst $f)
-    }
-} else {
-    Warn "  pi-hermes-memory/ - not found"
-}
-
-# ── 8. Recent hermes-cleanup Backups (last 5) ─────────────
-Log "8/8  Recent hermes-cleanup backups (last 5)..."
-$cleanup = Join-Path $agentDir 'hermes-cleanup'
-if (Test-Path -LiteralPath $cleanup) {
-    $recent = Get-ChildItem -LiteralPath $cleanup -Directory | Where-Object { $_.Name -match '^\d{4}' } | Sort-Object Name -Descending | Select-Object -First 5
-    foreach ($d in $recent) {
-        Copy-DirIfExists $d.FullName (Join-Path $ArchiveDir "hermes-cleanup\$($d.Name)")
-    }
-} else {
-    Warn "  hermes-cleanup/ - not found"
 }
 
 # ── Manifest ──────────────────────────────────────────────
 Log "Creating manifest..."
-$piVersion = (& pi --version 2>$null) -join ''
+$piVersion = ''
+try { $piVersion = (& pi --version 2>$null) -join '' } catch { $piVersion = '' }
 if (-not $piVersion) { $piVersion = 'unknown' }
 $manifest = @"
 Pi Complete Backup Manifest
@@ -201,8 +239,7 @@ $relFiles = Get-ChildItem -LiteralPath $ArchiveDir -Recurse -File | ForEach-Obje
 $manifest += ($relFiles -join "`n") + "`n"
 Set-Content -LiteralPath (Join-Path $ArchiveDir 'MANIFEST.txt') -Value $manifest -Encoding UTF8
 
-# ── 9. Compress ───────────────────────────────────────────
-$archivePath = $null
+# ── 9. Compress (external backups only) ───────────────────
 if ($KeepUncompressed) {
     Log "9/9  Skipping compression for internal backup"
 } else {
@@ -210,23 +247,30 @@ if ($KeepUncompressed) {
     $archivePath = Join-Path $BackupRoot ($ArchiveBase + ".$ArchiveExtension")
     try {
         if ($SevenZip) {
-            & $SevenZip.Source a -t7z -mx=9 $archivePath $ArchiveDir | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "7zip exited with code $LASTEXITCODE" }
+            # Run from $BackupRoot with relative names so the archive has a single
+            # top-level pi-backup-*/ entry (same layout as the bash script).
+            Push-Location -LiteralPath $BackupRoot
+            try {
+                $sevenOut = & $SevenZip.Source a -t7z -mx=9 "$ArchiveBase.7z" $ArchiveBase 2>&1
+                $sevenRc = $LASTEXITCODE
+            } finally {
+                Pop-Location
+            }
+            if ($sevenRc -ne 0) { throw "7zip exited with code ${sevenRc}: $(($sevenOut | Out-String).Trim())" }
         } else {
             Compress-Archive -LiteralPath $ArchiveDir -DestinationPath $archivePath -CompressionLevel Optimal -Force
         }
+        Set-PrivateMode $archivePath
         OK "  $archivePath"
     } catch {
-        Warn "  Compress-Archive failed: $_.Exception.Message"
+        Warn "  Compression ($ArchiveExtension) failed: $($_.Exception.Message)"
         Warn "  Keeping uncompressed staging dir: $ArchiveDir"
+        if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue }
         $archivePath = $null
+        $KeepStagingOnFail = $true
+        exit 1
     }
-}
-
-# ── 10. Clean up staging dir (unless told to keep it) ─────
-if ($KeepUncompressed) {
-    Log "Keeping uncompressed staging dir: $ArchiveDir"
-} elseif ($archivePath) {
+    # ── 10. Clean up staging dir ──────────────────────────
     Remove-Item -LiteralPath $ArchiveDir -Recurse -Force
 }
 
@@ -234,12 +278,22 @@ if ($KeepUncompressed) {
 Write-Host ""
 Log "================================================================"
 OK "Backup complete!"
-if ($archivePath) {
+if ($KeepUncompressed) {
+    $result = $ArchiveDir
+    Log "Staging:  $ArchiveDir"
+} else {
+    $result = $archivePath
     Log "Archive:  $archivePath"
     Log "Size:     $([math]::Round((Get-Item -LiteralPath $archivePath).Length / 1MB, 1)) MB"
 }
-if ($KeepUncompressed) { Log "Staging:  $ArchiveDir" }
 Write-Host ""
 Log "To restore after reinstall:"
-Log "  ~/projects/personal/pi-backup/restore-pi.ps1 $archivePath"
+Log "  .\restore-pi.ps1 $result"
 Write-Host ""
+$Completed = $true
+} finally {
+    if (-not $Completed -and -not $KeepStagingOnFail) {
+        if (Test-Path -LiteralPath $ArchiveDir) { Remove-Item -LiteralPath $ArchiveDir -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($archivePath -and (Test-Path -LiteralPath $archivePath)) { Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue }
+    }
+}

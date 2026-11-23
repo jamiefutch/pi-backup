@@ -5,32 +5,58 @@
 
 set -euo pipefail
 
+# Backups contain credentials (auth.json): keep everything we create private to this user.
+umask 077
+
 # ─── Config ──────────────────────────────────────────────────────
 PI_ROOT="${PI_ROOT:-$HOME/.pi}"
-BACKUP_ROOT="${BACKUP_ROOT:-$HOME/projects/personal/pi-utils/backups}"
+BACKUP_ROOT="${BACKUP_ROOT:-$HOME/pi-backups}"
+LOCAL_EXT_ROOT="${LOCAL_EXT_ROOT:-$HOME/projects}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$BACKUP_ROOT/pi-backup-$TIMESTAMP"   # staging dir (compressed into archive below)
 KEEP_UNCOMPRESSED="${KEEP_UNCOMPRESSED:-0}"  # set to 1 to keep the staging dir after archiving
 
 # ─── Compression tool detection ────────────────────────────────
+# Only needed for compressed (external) backups. Internal backups
+# (KEEP_UNCOMPRESSED=1) are plain staging directories and need no tool.
 # Prefer 7zip (best ratio) if present, fall back to zip.
 ZIP_EXT="zip"
 ZIP_TOOL=""
-if command -v 7zz >/dev/null 2>&1; then
-  ZIP_TOOL="7zz"
-  ZIP_EXT="7z"
-elif command -v 7z >/dev/null 2>&1; then
-  ZIP_TOOL="7z"
-  ZIP_EXT="7z"
-elif command -v 7za >/dev/null 2>&1; then
-  ZIP_TOOL="7za"
-  ZIP_EXT="7z"
-elif command -v zip >/dev/null 2>&1; then
-  ZIP_TOOL="zip"
-  ZIP_EXT="zip"
+ARCHIVE=""
+if [[ "$KEEP_UNCOMPRESSED" != "1" ]]; then
+  if command -v 7zz >/dev/null 2>&1; then
+    ZIP_TOOL="7zz"
+    ZIP_EXT="7z"
+  elif command -v 7z >/dev/null 2>&1; then
+    ZIP_TOOL="7z"
+    ZIP_EXT="7z"
+  elif command -v 7za >/dev/null 2>&1; then
+    ZIP_TOOL="7za"
+    ZIP_EXT="7z"
+  elif command -v zip >/dev/null 2>&1; then
+    ZIP_TOOL="zip"
+    ZIP_EXT="zip"
+  fi
+  [[ -n "$ZIP_TOOL" ]] || { echo "[ERR] Neither 7zip nor zip found. Install one for compressed backups." >&2; exit 1; }
+  ARCHIVE="$BACKUP_ROOT/pi-backup-$TIMESTAMP.$ZIP_EXT"
 fi
-[[ -n "$ZIP_TOOL" ]] || { echo "[ERR] Neither 7zip nor zip found. Install one for compressed backups." >&2; exit 1; }
-ARCHIVE="$BACKUP_ROOT/pi-backup-$TIMESTAMP.$ZIP_EXT"
+
+# ─── Cleanup on failure ───────────────────────────────────────
+# A half-built staging dir (or partial archive) is removed if the script fails.
+# A successful run, or a failed compression (staging is intact), keeps it.
+STAGING_CREATED=0
+KEEP_STAGING_ON_FAIL=0
+cleanup() {
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ "$STAGING_CREATED" == "1" && "$KEEP_STAGING_ON_FAIL" != "1" ]]; then
+      rm -rf "$BACKUP_DIR"
+    fi
+    [[ -n "$ARCHIVE" ]] && rm -f "$ARCHIVE"
+  fi
+  return $rc
+}
+trap cleanup EXIT
 
 # ─── Colors ──────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -44,15 +70,22 @@ ok()    { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERR]${NC}  $*"; }
 
+# ─── Manifest ────────────────────────────────────────────────────
+# What gets backed up is defined once, in backup-manifest.txt (shared with restore).
+MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backup-manifest.txt"
+[[ -f "$MANIFEST_FILE" ]] || { echo "[ERR] backup-manifest.txt not found next to $0" >&2; exit 1; }
+
 # ─── Helpers ─────────────────────────────────────────────────────
+strip_cr() { printf '%s' "${1%$'\r'}"; }
+
 copy_if_exists() {
   local src="$1" dst="$2"
   if [[ -e "$src" ]]; then
     mkdir -p "$(dirname "$dst")"
     cp -a "$src" "$dst"
-    ok "  $(basename "$src")"
+    ok "  ${dst#"$BACKUP_DIR"/}"
   else
-    warn "  $(basename "$src") — not found, skipping"
+    warn "  ${dst#"$BACKUP_DIR"/} — not found, skipping"
   fi
 }
 
@@ -67,6 +100,91 @@ copy_dir_if_exists() {
   fi
 }
 
+# Portable tree copy with exclusions (no rsync needed): tar pipe.
+copy_source_tree() {
+  local src="$1" dst="$2"
+  mkdir -p "$dst"
+  (cd "$src" && tar -cf - --exclude=node_modules --exclude=dist --exclude=build --exclude=.git \
+      --exclude=coverage --exclude='*.log' .) | (cd "$dst" && tar -xf -)
+}
+
+# auth.json holds credentials: optionally excluded, always private, always flagged.
+backup_auth() {
+  local src="$1" dst="$2"
+  if [[ "${PI_BACKUP_EXCLUDE_AUTH:-0}" == "1" ]]; then
+    warn "  auth.json — excluded (PI_BACKUP_EXCLUDE_AUTH=1)"
+    return 0
+  fi
+  copy_if_exists "$src" "$dst"
+  if [[ -f "$dst" ]]; then
+    chmod 600 "$dst"
+    warn "  auth.json holds your API credentials and is included in this backup."
+    warn "  Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out."
+  fi
+}
+
+backup_manifest_entries() {
+  local total step=0 kind f1 f2 f3
+  total="$(grep -c '^section|' "$MANIFEST_FILE" || true)"
+  while IFS='|' read -r kind f1 f2 f3 || [[ -n "$kind" ]]; do
+    kind="$(strip_cr "$kind")"; f1="$(strip_cr "${f1:-}")"; f2="$(strip_cr "${f2:-}")"; f3="$(strip_cr "${f3:-}")"
+    case "$kind" in
+      ''|'#'*) continue ;;
+      section)
+        step=$((step+1)); log "$step/$total  $f1..." ;;
+      file)
+        if [[ "$f2" == "auth.json" ]]; then backup_auth "$PI_ROOT/$f1" "$BACKUP_DIR/$f2"
+        else copy_if_exists "$PI_ROOT/$f1" "$BACKUP_DIR/$f2"; fi ;;
+      dir)
+        copy_dir_if_exists "$PI_ROOT/$f1" "$BACKUP_DIR/$f2" ;;
+      dir-each)
+        if [[ -d "$PI_ROOT/$f1" ]]; then
+          mkdir -p "$BACKUP_DIR/$f2"
+          local sub name
+          for sub in "$PI_ROOT/$f1"/*/; do
+            [[ -d "$sub" ]] || continue
+            name="$(basename "$sub")"
+            copy_dir_if_exists "$sub" "$BACKUP_DIR/$f2/$name"
+          done
+          ok "  $f2/ ($(ls -1 "$BACKUP_DIR/$f2" 2>/dev/null | wc -l | tr -d ' ') projects)"
+        else
+          warn "  $f2/ — not found"
+        fi ;;
+      local-ext)
+        if [[ -d "$LOCAL_EXT_ROOT/$f1" ]]; then
+          copy_source_tree "$LOCAL_EXT_ROOT/$f1" "$BACKUP_DIR/local-extensions/$f1"
+          ok "  $f1/ (source only)"
+        else
+          warn "  $f1 — not found at $LOCAL_EXT_ROOT/$f1"
+        fi ;;
+      npm)
+        if [[ -d "$PI_ROOT/$f1" ]]; then
+          # Only package.json and lockfiles, never node_modules
+          local f rel
+          while IFS= read -r f; do
+            rel="${f#$PI_ROOT/$f1/}"
+            mkdir -p "$BACKUP_DIR/$f2/$(dirname "$rel")"
+            cp "$f" "$BACKUP_DIR/$f2/$rel"
+          done < <(find "$PI_ROOT/$f1" -maxdepth 3 -type f -not -path '*/node_modules/*' \( -name "package.json" -o -name "package-lock.json" -o -name "npm-shrinkwrap.json" -o -name "pnpm-lock.yaml" \))
+          ok "  npm manifests (package.json, lockfiles)"
+        else
+          warn "  $(basename "$f1")/ — not found"
+        fi ;;
+      recent)
+        if [[ -d "$PI_ROOT/$f1" ]]; then
+          mkdir -p "$BACKUP_DIR/$f2"
+          local d
+          while IFS= read -r d; do
+            copy_dir_if_exists "$d" "$BACKUP_DIR/$f2/$(basename "$d")"
+          done < <(find "$PI_ROOT/$f1" -maxdepth 1 -type d -name "20*" | sort -r | head -n "${f3:-5}")
+        else
+          warn "  $(basename "$f1")/ — not found"
+        fi ;;
+      *) warn "Unknown manifest entry type: $kind" ;;
+    esac
+  done < "$MANIFEST_FILE"
+}
+
 # ─── Main ────────────────────────────────────────────────────────
 main() {
   echo
@@ -78,109 +196,9 @@ main() {
   echo
 
   mkdir -p "$BACKUP_DIR"
+  STAGING_CREATED=1
 
-  # ── 1. Core Config Files ──────────────────────────────────────
-  log "1/8  Core configuration files..."
-  copy_if_exists "$PI_ROOT/agent/settings.json"           "$BACKUP_DIR/settings.json"
-  copy_if_exists "$PI_ROOT/agent/auth.json"               "$BACKUP_DIR/auth.json"
-  copy_if_exists "$PI_ROOT/agent/models.json"             "$BACKUP_DIR/models.json"
-  copy_if_exists "$PI_ROOT/agent/trust.json"              "$BACKUP_DIR/trust.json"
-  copy_if_exists "$PI_ROOT/agent/keybindings.json"        "$BACKUP_DIR/keybindings.json"
-  copy_if_exists "$PI_ROOT/agent/pix.json"                "$BACKUP_DIR/pix.json"
-  copy_if_exists "$PI_ROOT/agent/optimizer.json"          "$BACKUP_DIR/optimizer.json"
-  copy_if_exists "$PI_ROOT/agent/lmstudio.json.bak"       "$BACKUP_DIR/lmstudio.json.bak"
-  copy_if_exists "$PI_ROOT/agent/hermes-memory-config.json" "$BACKUP_DIR/hermes-memory-config.json"
-  copy_if_exists "$PI_ROOT/agent/pi.code-workspace"       "$BACKUP_DIR/pi.code-workspace"
-
-  # ── 2. Extension Configs ──────────────────────────────────────
-  log "2/8  Extension configurations..."
-  copy_if_exists "$PI_ROOT/agent/pi-hermes-memory-cleanup/scoped-memory.json" \
-    "$BACKUP_DIR/pi-hermes-memory-cleanup/scoped-memory.json"
-  copy_if_exists "$PI_ROOT/agent/loop-police.json"        "$BACKUP_DIR/loop-police.json"
-  copy_if_exists "$PI_ROOT/agent/pi-rtk/config.json"      "$BACKUP_DIR/pi-rtk/config.json"
-  copy_if_exists "$PI_ROOT/agent/context-mode/config.json" "$BACKUP_DIR/context-mode/config.json"
-  copy_if_exists "$PI_ROOT/agent/pi-timeout/config.json"  "$BACKUP_DIR/pi-timeout/config.json"
-  copy_if_exists "$PI_ROOT/agent/pi-context-viewer/config.json" "$BACKUP_DIR/pi-context-viewer/config.json"
-  copy_if_exists "$PI_ROOT/agent/pix-optimizer/config.json" "$BACKUP_DIR/pix-optimizer/config.json"
-  copy_if_exists "$PI_ROOT/agent/pi-nvidia-nim/config.json" "$BACKUP_DIR/pi-nvidia-nim/config.json"
-
-  # ── 3. Global Skills ──────────────────────────────────────────
-  log "3/8  Global skills..."
-  copy_dir_if_exists "$PI_ROOT/agent/skills"              "$BACKUP_DIR/skills"
-
-  # ── 4. Project Skills & Memory ────────────────────────────────
-  log "4/8  Project skills & memory..."
-  if [[ -d "$PI_ROOT/agent/projects-memory" ]]; then
-    mkdir -p "$BACKUP_DIR/projects-memory"
-    for proj in "$PI_ROOT/agent/projects-memory"/*/; do
-      [[ -d "$proj" ]] || continue
-      name="$(basename "$proj")"
-      copy_dir_if_exists "$proj" "$BACKUP_DIR/projects-memory/$name"
-    done
-    ok "  projects-memory/ ($(ls -1 "$BACKUP_DIR/projects-memory" 2>/dev/null | wc -l) projects)"
-  else
-    warn "  projects-memory/ — not found"
-  fi
-
-  # ── 5. Local Extensions (source code only, no node_modules) ────
-  log "5/8  Local extension source code..."
-  local_exts=(
-    "pi-timeout"
-    "pi-chunk"
-    "pi-hermes-memory-cleanup"
-    "pi-context-docs"
-  )
-  for ext in "${local_exts[@]}"; do
-    if [[ -d "$HOME/projects/personal/$ext" ]]; then
-      mkdir -p "$BACKUP_DIR/local-extensions/$ext"
-      # Copy source, exclude node_modules, dist, build, .git, coverage
-      rsync -a --exclude 'node_modules' --exclude 'dist' --exclude 'build' --exclude '.git' --exclude 'coverage' --exclude '*.log' \
-        "$HOME/projects/personal/$ext/" "$BACKUP_DIR/local-extensions/$ext/"
-      ok "  $ext/ (source only)"
-    else
-      warn "  $ext — not found at ~/projects/personal/$ext"
-    fi
-  done
-
-  # ── 6. Installed npm Extensions (package.json + lock) ─────────
-  log "6/8  npm extension manifests..."
-  if [[ -d "$PI_ROOT/agent/npm" ]]; then
-    # Only copy package.json and lockfiles, not node_modules
-    find "$PI_ROOT/agent/npm" -maxdepth 3 -type f \( -name "package.json" -o -name "package-lock.json" -o -name "npm-shrinkwrap.json" -o -name "pnpm-lock.yaml" \) | while read -r f; do
-      rel="${f#$PI_ROOT/agent/npm/}"
-      mkdir -p "$BACKUP_DIR/npm-manifests/$(dirname "$rel")"
-      cp "$f" "$BACKUP_DIR/npm-manifests/$rel"
-    done
-    ok "  npm manifests (package.json, lockfiles)"
-  else
-    warn "  npm/ — not found"
-  fi
-
-  # ── 7. Hermes Memory (active files only, not sessions DB) ─────
-  log "7/8  Hermes memory (active files)..."
-  if [[ -d "$PI_ROOT/agent/pi-hermes-memory" ]]; then
-    mkdir -p "$BACKUP_DIR/pi-hermes-memory"
-    for f in MEMORY.md USER.md failures.md; do
-      copy_if_exists "$PI_ROOT/agent/pi-hermes-memory/$f" "$BACKUP_DIR/pi-hermes-memory/$f"
-    done
-    # Also backup retired/archived if they exist
-    for f in retired-failures.md retired-memory.md; do
-      copy_if_exists "$PI_ROOT/agent/pi-hermes-memory/$f" "$BACKUP_DIR/pi-hermes-memory/$f"
-    done
-  else
-    warn "  pi-hermes-memory/ — not found"
-  fi
-
-  # ── 8. Cleanup Backups (recent) ───────────────────────────────
-  log "8/8  Recent hermes-cleanup backups (last 5)..."
-  if [[ -d "$PI_ROOT/agent/hermes-cleanup" ]]; then
-    mkdir -p "$BACKUP_DIR/hermes-cleanup"
-    find "$PI_ROOT/agent/hermes-cleanup" -maxdepth 1 -type d -name "20*" | sort -r | head -5 | while read -r d; do
-      copy_dir_if_exists "$d" "$BACKUP_DIR/hermes-cleanup/$(basename "$d")"
-    done
-  else
-    warn "  hermes-cleanup/ — not found"
-  fi
+  backup_manifest_entries
 
   # ── Manifest ──────────────────────────────────────────────────
   log "Creating manifest..."
@@ -197,20 +215,26 @@ Contents:
 EOF
   find "$BACKUP_DIR" -type f | sed "s|$BACKUP_DIR/||" | sort >> "$BACKUP_DIR/MANIFEST.txt"
 
-  # ── 9. Compress ───────────────────────────────────────────────
-  log "9/9  Compressing backup ($ZIP_TOOL)..."
-  local name="$(basename "$BACKUP_DIR")"
-  if [[ "$ZIP_TOOL" == "zip" ]]; then
-    (cd "$BACKUP_ROOT" && zip -rq "$(basename "$ARCHIVE")" "$name")
-  else
-    (cd "$BACKUP_ROOT" && "$ZIP_TOOL" a -t7z -mx=9 "$(basename "$ARCHIVE")" "$name" >/dev/null)
-  fi
-  ok "  $ARCHIVE"
-
-  # ── 10. Clean up staging dir (unless told to keep it) ─────────
+  # ── 9. Compress (external backups only) ───────────────────────
   if [[ "$KEEP_UNCOMPRESSED" == "1" ]]; then
-    log "Keeping uncompressed staging dir: $BACKUP_DIR"
+    log "9/9  Skipping compression for internal backup"
   else
+    log "9/9  Compressing backup ($ZIP_TOOL)..."
+    local name comp_out comp_rc=0
+    name="$(basename "$BACKUP_DIR")"
+    if [[ "$ZIP_TOOL" == "zip" ]]; then
+      comp_out="$(cd "$BACKUP_ROOT" && zip -rq "$(basename "$ARCHIVE")" "$name" 2>&1)" || comp_rc=$?
+    else
+      comp_out="$(cd "$BACKUP_ROOT" && "$ZIP_TOOL" a -t7z -mx=9 "$(basename "$ARCHIVE")" "$name" 2>&1)" || comp_rc=$?
+    fi
+    if [[ $comp_rc -ne 0 ]]; then
+      warn "  Compression with $ZIP_TOOL failed (exit $comp_rc): $comp_out"
+      warn "  Keeping uncompressed staging dir: $BACKUP_DIR"
+      KEEP_STAGING_ON_FAIL=1
+      exit 1
+    fi
+    ok "  $ARCHIVE"
+    # ── 10. Clean up staging dir ────────────────────────────────
     rm -rf "$BACKUP_DIR"
   fi
 
@@ -218,12 +242,19 @@ EOF
   echo
   log "════════════════════════════════════════════════════════════"
   ok "Backup complete!"
-  log "Archive:  $ARCHIVE"
-  log "Size:     $(du -h "$ARCHIVE" | cut -f1)"
-  [[ "$KEEP_UNCOMPRESSED" == "1" ]] && log "Staging:  $BACKUP_DIR"
+  local result
+  if [[ "$KEEP_UNCOMPRESSED" == "1" ]]; then
+    result="$BACKUP_DIR"
+    log "Staging:  $BACKUP_DIR"
+    log "Size:     $(du -sh "$BACKUP_DIR" | cut -f1)"
+  else
+    result="$ARCHIVE"
+    log "Archive:  $ARCHIVE"
+    log "Size:     $(du -h "$ARCHIVE" | cut -f1)"
+  fi
   echo
   log "To restore after reinstall:"
-  log "  ~/projects/personal/pi-backup/restore-pi.sh $ARCHIVE"
+  log "  ./restore-pi.sh $result"
   echo
 }
 

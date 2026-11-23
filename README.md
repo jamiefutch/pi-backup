@@ -75,7 +75,7 @@ Opens the **Pi Backup Manager** interactive menu:
 
 ```
 Pi Backup Manager — 8 backups (1 internal, 7 external)
-External dir: ~/projects/personal/pi-utils/backups
+External dir: ~/pi-backups
 
  → 📦 Create internal backup  (~/.pi/backups/  — quick rollback)
    💾 Create external backup  (survives reinstall)
@@ -125,8 +125,8 @@ Backup: pi-backup-20260812-112019.7z
 
 | Action | Description |
 |--------|-------------|
-| **🔄 Restore** | Runs the platform restore script — overwrites all Pi config (requires confirmation) |
-| **📋 Copy to internal** | Copies external backup to `~/.pi/backups/` for quick access (external only) |
+| **🔄 Restore** | After confirmation, shows (and copies, where possible) the exact restore command to run **after you exit Pi**. The TUI never restores in-process, because the running Pi owns the files being replaced |
+| **📋 Copy to internal** | Extracts/copies an external backup into `~/.pi/backups/` as an uncompressed directory (external only) |
 | **📄 View manifest** | Opens `MANIFEST.txt` in editor (extracts from compressed archives) |
 | **🗑️ Delete** | Permanently removes backup (requires confirmation) |
 
@@ -135,7 +135,7 @@ Backup: pi-backup-20260812-112019.7z
 | Location | Path | Survives Clean Reinstall? | Format |
 |----------|------|---------------------------|--------|
 | **Internal** | `~/.pi/backups/` | ❌ NO (wiped by `rm -rf ~/.pi`) | Uncompressed dirs |
-| **External** | `~/projects/personal/pi-utils/backups/` | ✅ YES | Compressed (.7z/.zip) |
+| **External** | `~/pi-backups/` | ✅ YES | Compressed (.7z/.zip) |
 
 > **Key point**: Always create an **external backup** before a clean reinstall. Internal backups are for quick rollbacks during normal use only.
 
@@ -143,18 +143,28 @@ Backup: pi-backup-20260812-112019.7z
 
 #### 1. Backup (before reinstall)
 ```bash
-~/projects/personal/pi-backup/backup-pi.sh
+./backup-pi.sh
 ```
 
 #### 2. Clean Reinstall
 ```bash
-~/projects/personal/pi-backup/pi-clean-reinstall.sh
+./pi-clean-reinstall.sh
 ```
+
+The clean reinstall is rollback-safe: it checks that a backup exists in `BACKUP_ROOT` (and asks for an extra `no backup` confirmation if not), **moves** `~/.pi` to `~/.pi.pre-reinstall-<timestamp>`, uninstalls and reinstalls Pi, verifies `pi --version`, and only then deletes the moved copy. If any step fails, the original `~/.pi` is moved back. Set `KEEP_OLD=1` to keep the moved-aside copy.
 
 #### 3. Restore a directory, `.7z` archive, or `.zip` archive
 ```bash
-~/projects/personal/pi-backup/restore-pi.sh ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000.7z
+./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000.7z
 ```
+
+Exit Pi first: the script warns (but does not block) if it detects a running Pi process, because files restored under a running Pi can be overwritten when it exits. Restore asks for confirmation; it needs an interactive terminal and otherwise stops with a message. For scripted use, set `PI_BACKUP_ASSUME_YES=1`:
+
+```bash
+PI_BACKUP_ASSUME_YES=1 ./restore-pi.sh ~/pi-backups/pi-backup-20260811-143000.7z
+```
+
+Temporary extraction directories are always removed, including when you answer `n`, the archive is damaged, or a copy fails part-way.
 
 #### 4. Reinstall npm deps + verify
 ```bash
@@ -167,7 +177,7 @@ pi --version
 
 ### Windows (PowerShell)
 
-On Windows, use the `.ps1` scripts from PowerShell 7 (`pwsh`). The backup data directory defaults to `~/projects/personal/pi-utils/backups`.
+On Windows, use the `.ps1` scripts from PowerShell 7 (`pwsh`). The backup data directory defaults to `~/pi-backups`.
 
 ```powershell
 # 1. Backup (before reinstall)
@@ -177,7 +187,7 @@ On Windows, use the `.ps1` scripts from PowerShell 7 (`pwsh`). The backup data d
 .\pi-clean-reinstall.ps1
 
 # 3. Restore
-.\restore-pi.ps1 ~\projects\personal\pi-utils\backups\pi-backup-20260811-143000
+.\restore-pi.ps1 ~\pi-backups\pi-backup-20260811-143000
 
 # 4. Reinstall npm deps + verify
 cd ~\.pi\agent; npm install
@@ -195,30 +205,51 @@ $env:PI_ROOT='C:\Users\you\.pi'; $env:BACKUP_ROOT='D:\pi-backups'; .\backup-pi.p
 
 ## What Gets Backed Up
 
+The list lives in one file, [`backup-manifest.txt`](backup-manifest.txt), read by all four scripts; a test keeps this table in sync with it.
+
 | Category | Paths |
 |----------|-------|
 | **Core config** | `settings.json`, `auth.json`, `models.json`, `trust.json`, `keybindings.json`, `pix.json`, `optimizer.json`, `lmstudio.json.bak`, `hermes-memory-config.json`, `pi.code-workspace` |
 | **Extension configs** | `pi-hermes-memory-cleanup/scoped-memory.json`, `loop-police.json`, `pi-rtk/config.json`, `context-mode/config.json`, `pi-timeout/config.json`, `pi-context-viewer/config.json`, `pix-optimizer/config.json`, `pi-nvidia-nim/config.json` |
 | **Global skills** | `~/.pi/agent/skills/` |
 | **Project skills & memory** | `~/.pi/agent/projects-memory/<project>/` |
-| **Local extension source** | `~/projects/personal/pi-timeout/`, `pi-chunk/`, `pi-hermes-memory-cleanup/`, `pi-context-docs/` |
-| **npm manifests** | `package.json`, `package-lock.json`, `npm-shrinkwrap.json` from `~/.pi/agent/npm/` |
-| **Hermes memory (active)** | `MEMORY.md`, `USER.md`, `failures.md`, `retired-*.md` |
-| **Cleanup backups** | Last 5 from `~/.pi/agent/hermes-cleanup/` |
+| **Local extension source** | `$LOCAL_EXT_ROOT/pi-timeout/`, `pi-chunk/`, `pi-hermes-memory-cleanup/`, `pi-context-docs/` (defaults to `~/projects/`; `node_modules`, `dist`, `build`, `.git`, `coverage` and `*.log` are skipped) |
+| **npm manifests** | `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml` from `~/.pi/agent/npm/` (never `node_modules`) |
+| **Hermes memory (active)** | `MEMORY.md`, `USER.md`, `failures.md`, `retired-failures.md`, `retired-memory.md` |
+| **Cleanup backups** | Last 5 timestamped (`20*`) directories from `~/.pi/agent/hermes-cleanup/` |
 
-The backup script output:
+Example output of `./backup-pi.sh` (captured from a real run, abridged):
 ```
-════════════════════════════════════════════════════════════
-  Pi Complete Backup
-════════════════════════════════════════════════════════════
-Source:      /Users/jamiefutch/.pi
-Destination: ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
+[INFO] ════════════════════════════════════════════════════════════
+[INFO]   Pi Complete Backup
+[INFO] ════════════════════════════════════════════════════════════
+[INFO] Source:      ~/.pi
+[INFO] Destination: ~/pi-backups/pi-backup-20261122-011819
+
+[INFO] 1/8  Core configuration files...
+[OK]     settings.json
+[OK]     auth.json
+[WARN]   auth.json holds your API credentials and is included in this backup.
+[WARN]   Keep the backup private; set PI_BACKUP_EXCLUDE_AUTH=1 to leave it out.
+[OK]     models.json
+[WARN]   keybindings.json — not found, skipping
 ...
-Backup complete!
-Location: ~/projects/personal/pi-utils/backups/pi-backup-20260811-143000
-Size:     12M
-Files:    347
+[INFO] 8/8  Recent hermes-cleanup backups (last 5)...
+[OK]     20260107/
+...
+[INFO] 9/9  Compressing backup (zip)...
+[OK]     ~/pi-backups/pi-backup-20261122-011819.zip
+
+[INFO] ════════════════════════════════════════════════════════════
+[OK]   Backup complete!
+[INFO] Archive:  ~/pi-backups/pi-backup-20261122-011819.zip
+[INFO] Size:     12K
+
+[INFO] To restore after reinstall:
+[INFO]   ./restore-pi.sh ~/pi-backups/pi-backup-20261122-011819.zip
 ```
+
+An internal backup (`KEEP_UNCOMPRESSED=1`, what the TUI's **Create internal backup** runs) skips the compression step and prints `Staging:  <directory>` instead of `Archive:`.
 
 ## What Does NOT Get Backed Up (Regeneratable)
 
@@ -232,10 +263,22 @@ Files:    347
 
 ---
 
+## Security
+
+> **Backups contain `auth.json`, which holds your API keys and tokens.** Treat every backup (directory, `.zip`, `.7z`) as a secret.
+
+- Backups are created private to your user: `umask 077` on macOS/Linux, `auth.json` is `chmod 600`, and archives are `600` (on Windows, rely on your profile folder's ACLs and avoid shared drives).
+- Set `PI_BACKUP_EXCLUDE_AUTH=1` to leave `auth.json` out entirely (you will need to sign in to providers again after a restore).
+- Restore sets a restored `auth.json` back to `600`.
+- There is intentionally no built-in encryption: passing a password to `7z` on the command line leaks it through `ps`. If you need encryption, encrypt the finished archive yourself (for example with `age` or `gpg`) or store backups on an encrypted volume.
+- Never commit or share backups. They are also in `.gitignore` (`*.7z`, `*.zip`, `backups/`).
+
+---
+
 ## Backup Location
 
 ```
-~/projects/personal/pi-utils/backups/
+~/pi-backups/
 ├── pi-backup-20260811-143000/
 │   ├── MANIFEST.txt
 │   ├── settings.json
@@ -261,7 +304,7 @@ The external backup location is resolved in this priority order:
 
 1. **`BACKUP_ROOT`** environment variable (highest priority)
 2. **`externalBackupDir`** key in `~/.pi/agent/settings.json`
-3. **Default**: `~/projects/personal/pi-utils/backups/`
+3. **Default**: `~/pi-backups/`
 
 ```json
 // ~/.pi/agent/settings.json
@@ -276,6 +319,8 @@ Use the **⚙️ Configure external backup directory** option in `/pi-backup` to
 
 - **📝 Change directory** — prompt to type a path, saved to `settings.json`
 - **🔄 Reset to default** — removes the `settings.json` value, falls back to env var / default
+
+If `settings.json` is corrupt (not valid JSON), the manager never overwrites it: read-only screens fall back to the default directory with one warning, and changes are refused with an error. Successful saves are written atomically and keep the previous file as `settings.json.bak-<timestamp>` (last 3 kept).
 
 ### When the prompt appears
 
@@ -292,13 +337,17 @@ If the default directory already contains backups, it is treated as configured a
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PI_ROOT` | `~/.pi` | Override Pi root directory |
-| `BACKUP_ROOT` | `~/projects/personal/pi-utils/backups` | Override backup destination (highest priority for the TUI too) |
-| `KEEP_UNCOMPRESSED` | `0` | Keep the uncompressed staging directory after external backup; the TUI sets this automatically for internal backups |
+| `BACKUP_ROOT` | `~/pi-backups` | Override backup destination (highest priority for the TUI too) |
+| `LOCAL_EXT_ROOT` | `~/projects` | Override the directory containing local extension source repositories |
+| `KEEP_UNCOMPRESSED` | `0` | `1` makes a plain, uncompressed staging directory and skips compression (no `zip`/7-Zip needed); the TUI sets this for internal backups. With `0` the staging directory is compressed and removed |
+| `PI_BACKUP_ASSUME_YES` | unset | Set to `1` to skip the restore confirmation prompt (scripted use). Without it, restore needs an interactive terminal and exits with a clear message otherwise |
+| `PI_BACKUP_EXCLUDE_AUTH` | unset | Set to `1` to leave `auth.json` (API credentials) out of the backup |
+| `KEEP_OLD` | unset | Set to `1` to keep `~/.pi.pre-reinstall-<timestamp>` after a successful clean reinstall |
 | `PKG_MANAGER` | `bun` | Package manager used by the clean-reinstall scripts (`bun`, `npm`, etc.) |
 
 ```bash
 # Custom locations
-PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ~/projects/personal/pi-backup/backup-pi.sh
+PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ./backup-pi.sh
 ```
 
 ---
@@ -307,10 +356,10 @@ PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ~/projects/personal/pi-backup/backu
 
 ```bash
 # Daily backup at 3 AM
-0 3 * * * ~/projects/personal/pi-backup/backup-pi.sh >> ~/pi-backup.log 2>&1
+0 3 * * * ./backup-pi.sh >> ~/pi-backup.log 2>&1
 
 # Keep last 30 backups
-0 4 * * * find ~/projects/personal/pi-utils/backups -maxdepth 1 -type d -name 'pi-backup-*' -mtime +30 -exec rm -rf {} \;
+0 4 * * * find ~/pi-backups -maxdepth 1 -type d -name 'pi-backup-*' -mtime +30 -exec rm -rf {} \;
 ```
 
 ---
@@ -323,7 +372,10 @@ PI_ROOT=/custom/.pi BACKUP_ROOT=/mnt/backups ~/projects/personal/pi-backup/backu
 | "npm install fails" | Check Node.js version (need ≥22), try `bun install` |
 | "Skills not loading" | Verify `settings.json` has correct `packages` paths after restore |
 | "Models not found" | Check `models.json` restored correctly, restart Pi |
-| "Auth failed" | Verify `auth.json` restored, API keys valid |
+| "Auth failed" | Verify `auth.json` restored, API keys valid (it is absent if the backup was made with `PI_BACKUP_EXCLUDE_AUTH=1`) |
+| Restore says "Cannot read a confirmation" | stdin is not a terminal (cron, CI, pipe). Run it in a terminal or set `PI_BACKUP_ASSUME_YES=1` |
+| Backup says "Compression ... failed" | The staging directory is kept (it is intact). Fix 7-Zip/zip and re-run, or restore directly from the staging directory |
+| TUI says `settings.json could not be parsed` | The file is never overwritten. Fix the JSON (or delete the file) and retry; `settings.json.bak-*` copies are kept from earlier saves |
 
 ---
 
