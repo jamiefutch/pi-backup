@@ -94,12 +94,21 @@ t_archive_private() {
   assert_eq "$(file_mode "$ar")" 600 "archive mode"
 }
 t_exclude_auth_archive() {
-  command -v unzip >/dev/null || { echo "    (skip: no unzip)"; return 0; }
   make_fixture
   PI_BACKUP_EXCLUDE_AUTH=1 KEEP_UNCOMPRESSED=0 run_script "$1" backup-pi >/dev/null 2>&1
-  local ar; ar="$(ls "$BACKUP_ROOT"/pi-backup-*.zip 2>/dev/null | head -1)"
-  [[ -n "$ar" ]] || { echo "    (skip: 7z archive produced)"; return 0; }
-  assert_not_contains "$(unzip -l "$ar")" "auth.json" "zip listing"
+  local ar; ar="$(ls "$BACKUP_ROOT"/pi-backup-*.7z "$BACKUP_ROOT"/pi-backup-*.zip 2>/dev/null | head -1)"
+  assert_contains "$ar" "pi-backup-" "an archive was produced"
+  local listing
+  case "$ar" in
+    *.7z)
+      local tool; tool="$(command -v 7zz || command -v 7z || command -v 7za)"
+      [[ -n "$tool" ]] || { echo "    (skip: no 7-Zip to list .7z)"; return 0; }
+      listing="$("$tool" l "$ar")" ;;
+    *.zip)
+      command -v unzip >/dev/null || { echo "    (skip: no unzip)"; return 0; }
+      listing="$(unzip -l "$ar")" ;;
+  esac
+  assert_not_contains "$listing" "auth.json" "archive listing"
 }
 
 # Bug 7: archive has a single top-level pi-backup-*/ entry.
