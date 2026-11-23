@@ -37,12 +37,19 @@ function Read-Manifest([string]$path) {
         $l = $line.TrimEnd("`r")
         if ($l -eq '' -or $l.StartsWith('#')) { continue }
         $p = $l.Split('|')
-        [pscustomobject]@{
+        $e = [pscustomobject]@{
             Kind = $p[0]
             A    = if ($p.Count -gt 1) { $p[1] } else { '' }
             B    = if ($p.Count -gt 2) { $p[2] } else { '' }
             C    = if ($p.Count -gt 3) { $p[3] } else { '' }
+            D    = if ($p.Count -gt 4) { $p[4] } else { '' }
+            Gate = ''
         }
+        # optional|ENV|kind|pi path|backup path: shift the fields left and remember the gate variable
+        if ($e.Kind -eq 'optional') {
+            $e = [pscustomobject]@{ Kind = $e.B; A = $e.C; B = $e.D; C = ''; D = ''; Gate = $e.A }
+        }
+        $e
     }
 }
 
@@ -237,8 +244,24 @@ $entries = @(Read-Manifest $ManifestFile)
 $total = @($entries | Where-Object { $_.Kind -eq 'section' }).Count
 $step = 0
 foreach ($e in $entries) {
+    # optional entries are restored only when the backup holds them, silently otherwise
+    if ($e.Gate -and -not (Test-Path -LiteralPath (P $BackupDir $e.B))) { continue }
     switch ($e.Kind) {
         'section' { $step++; Log "$step/$total  $($e.A)..." }
+        'sqlite' {
+            $src = P $BackupDir $e.B
+            $dst = P $PiRoot $e.A
+            if (Test-Path -LiteralPath $src -PathType Leaf) {
+                $dstDir = Split-Path $dst -Parent
+                if (!(Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+                # stale -wal/-shm/-journal next to the destination would be applied to the restored file
+                foreach ($suffix in '-wal','-shm','-journal') { Remove-Item -LiteralPath ($dst + $suffix) -Force -ErrorAction SilentlyContinue }
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+                OK "  $($e.B)"
+            } else {
+                Warn "  $($e.B) - not in backup, skipping"
+            }
+        }
         'file' {
             $dst = P $PiRoot $e.A
             $src = P $BackupDir $e.B

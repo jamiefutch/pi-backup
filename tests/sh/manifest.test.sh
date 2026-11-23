@@ -3,7 +3,8 @@ source "$(dirname "$0")/../helpers.sh"
 
 MANIFEST="$REPO_ROOT/backup-manifest.txt"
 
-manifest_lines() { tr -d '\r' < "$MANIFEST" | grep -v '^#' | grep -v '^$'; }
+# Entries as kind|a|b|c. An optional line is shown without its gate column, so the checks below apply to it too.
+manifest_lines() { tr -d '\r' < "$MANIFEST" | grep -v '^#' | grep -v '^$' | sed 's/^optional|[^|]*|//' ; }
 
 t_lf_only() {
   if grep -q $'\r' "$MANIFEST"; then _fail "backup-manifest.txt contains CR characters"; else _pass; fi
@@ -22,6 +23,11 @@ t_readme_in_sync() {
           *)                  assert_contains "$readme" "\`$b\`" "README lacks $b" ;;
         esac ;;
       dir|dir-each|recent) assert_contains "$readme" "~/.pi/$a/" "README lacks $a" ;;
+      sqlite)
+        case "$b" in
+          pi-hermes-memory/*) assert_contains "$readme" "\`${b#pi-hermes-memory/}\`" "README lacks $b" ;;
+          *)                  assert_contains "$readme" "\`$b\`" "README lacks $b" ;;
+        esac ;;
       local-ext)           assert_contains "$readme" "$a/" "README lacks local extension $a" ;;
       npm)                 assert_contains "$readme" "~/.pi/$a/" "README lacks $a" ;;
     esac

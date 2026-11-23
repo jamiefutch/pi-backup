@@ -10,6 +10,8 @@
 #   local-ext|<name>                     source tree under LOCAL_EXT_ROOT (node_modules, dist, build, .git, coverage, *.log excluded)
 #   npm|<pi path>|<backup path>          package.json and lockfiles only (max depth 3), never node_modules
 #   recent|<pi path>|<backup path>|<n>   the n newest sub-directories whose name starts with "20" (timestamps)
+#   sqlite|<pi path>|<backup path>       a SQLite database, copied with sqlite3 .backup so WAL changes are included
+#   optional|<ENV_VAR>|<entry>           the entry (file, dir, sqlite) is backed up only when ENV_VAR=1
 #
 # Keep README.md "What Gets Backed Up" in sync; tests/sh/manifest.test.sh checks it.
 
@@ -56,6 +58,25 @@ file|agent/pi-hermes-memory/USER.md|pi-hermes-memory/USER.md
 file|agent/pi-hermes-memory/failures.md|pi-hermes-memory/failures.md
 file|agent/pi-hermes-memory/retired-failures.md|pi-hermes-memory/retired-failures.md
 file|agent/pi-hermes-memory/retired-memory.md|pi-hermes-memory/retired-memory.md
+
+section|Memory database and skills
+sqlite|agent/pi-hermes-memory/sessions.db|pi-hermes-memory/sessions.db
+dir|agent/pi-hermes-memory/skills|pi-hermes-memory/skills
+file|agent/pi-hermes-memory/.skills-migrated-to-extension-storage|pi-hermes-memory/.skills-migrated-to-extension-storage
+
+section|Extension state
+file|agent/pi-subagents/last-seen-version.json|pi-subagents/last-seen-version.json
+file|agent/anti-stall.json|anti-stall.json
+file|agent/crashes.json|crashes.json
+file|agent/run-history.jsonl|run-history.jsonl
+file|agent/models-store.json|models-store.json
+dir|agent/missions|missions
+dir|agent/extensions|extensions
+
+section|Optional (opt-in with environment variables)
+optional|PI_BACKUP_INCLUDE_SESSIONS|dir|agent/sessions|sessions
+optional|PI_BACKUP_INCLUDE_GIT|dir|agent/git|git
+optional|PI_BACKUP_INCLUDE_BIN|dir|agent/bin|bin
 
 section|Recent hermes-cleanup backups (last 5)
 recent|agent/hermes-cleanup|hermes-cleanup|5
