@@ -130,6 +130,7 @@ assert_no_temp_leak() {
     case "$p" in "$TMPDIR"/*) ;; *) _fail "$1: temp path outside TMPDIR: $p"; [[ -e "$p" ]] && rm -rf "$p" ;; esac
     [[ -e "$p" ]] && { _fail "$1: leaked $p"; rm -rf "$p"; }
   done < "$MKTEMP_LOG"
+  rm -rf "$TMPDIR/.dotnet"   # runtime state pwsh itself creates; not a script leak
   assert_empty_dir "$TMPDIR" "$1 (TMPDIR)"
 }
 

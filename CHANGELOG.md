@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0
+## 1.1.12
 
 ### Fixed
 - **Restore with no stdin** failed silently. It now prints a clear message, and `PI_BACKUP_ASSUME_YES=1` skips the prompt for scripted use. PowerShell restore no longer proceeds when stdin is empty.
