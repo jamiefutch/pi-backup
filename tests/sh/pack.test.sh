@@ -8,7 +8,7 @@ t_pack_contents() {
   json="$(cd "$REPO_ROOT" && npm pack --dry-run --json 2>/dev/null)" || { _fail "npm pack --dry-run failed"; return 0; }
   files="$(node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(j[0].files.map(f=>f.path).join("\n"))' <<<"$json")"
   assert_contains "$files" "extensions/pi-backup-manager.ts"
-  for f in backup-pi.sh restore-pi.sh pi-clean-reinstall.sh backup-pi.ps1 restore-pi.ps1 pi-clean-reinstall.ps1 backup-manifest.txt README.md LICENSE package.json; do
+  for f in backup-pi.sh restore-pi.sh pi-clean-reinstall.sh backup-pi.ps1 restore-pi.ps1 pi-clean-reinstall.ps1 backup-manifest.txt README.md CHANGELOG.md LICENSE package.json; do
     assert_contains "$files" "$f" "published files"
   done
   bad="$(grep -E '^(tests|dist|docs|\.pi|\.github|node_modules)/|\.(7z|zip)$|auth\.json' <<<"$files" || true)"
