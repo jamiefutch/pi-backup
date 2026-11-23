@@ -16,6 +16,9 @@ jobs:
   publish:
     needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # lets npm trusted publishing (OIDC) authenticate without a token
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -46,7 +49,21 @@ jobs:
       - name: Check the package contents
         run: npm pack --dry-run
 
+      - name: Check npm authentication is configured
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::warning::The NPM_TOKEN secret is empty. Publishing only works if this package has npm trusted publishing configured for this workflow."
+          fi
+
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - name: Use a current npm
+        run: npm install -g npm@^11.5.1
+
       - name: Publish package
         run: npm publish --access public
         env:
+          # Empty when the secret is unset; npm then falls back to trusted publishing.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
